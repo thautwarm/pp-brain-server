@@ -51,7 +51,7 @@ lint + format biome                    biome.jsonc ×1
 用包名，不用相对路径：
 
 ```ts
-import { CoreAgent } from "@might/chat-core";
+import { ChatAgent } from "@might/chat-core";
 ```
 
 Node 会把 `node_modules` 里的软链解析回真实路径（`packages/chat-core/src/index.ts`），真实路径不在 `node_modules` 下，所以类型剥离照样生效。这是"零构建"能成立的关键。
@@ -88,7 +88,7 @@ Node 只做类型剥离，碰不了 `enum`、`namespace`、构造函数参数属
 
 ### 3. `node --test` 会扫全仓库并执行里面的测试文件
 
-**这条有安全含义。** 裸跑 `node --test` 会递归扫描整个仓库，只要文件名匹配测试模式就**执行它** —— 包括 `tmp/` 里那种第三方解包代码。实测把 `tmp/core/test/injected.test.ts` 放进去，`node --test` 直接跑起来了。
+**这条有安全含义。** 裸跑 `node --test` 会递归扫描整个仓库，只要文件名匹配测试模式就**执行它** —— 包括从外部解压进来的 `tmp/` 里的代码。实测把 `tmp/core/test/injected.test.ts` 放进去，`node --test` 直接跑起来了。
 
 `tsc`（靠 `include`）和 `biome`（靠 .gitignore）都不会，**只有 test 会**。所以脚本显式限定了 glob：
 
@@ -101,7 +101,7 @@ node --test "packages/**/*.test.ts" "apps/**/*.test.ts"
 ### 4. biome 的两个坑
 
 - **默认缩进是 tab。** 零配置的 biome 会把整个仓库改成 tab，所以 `biome.jsonc` 里显式写了 `indentStyle: space`。
-- **排除只能靠配置文件。** `--vcs-use-ignore-file=true` 这个命令行参数**实测无效**，`tmp/` 照样被扫（29 个文件 vs 10 个）。只有写进 `biome.jsonc` 的 `vcs.useIgnoreFile` 才生效。这很关键 —— 不挡住的话，`npm run lint:fix` 会去改写 `tmp/` 里那份第三方代码。
+- **排除只能靠配置文件。** `--vcs-use-ignore-file=true` 这个命令行参数**实测无效**，`tmp/` 照样被扫（29 个文件 vs 10 个）。只有写进 `biome.jsonc` 的 `vcs.useIgnoreFile` 才生效。这很关键 —— 不挡住的话，`npm run lint:fix` 会去改写 `tmp/` 里那份外部解压进来的代码。
 - 附带：`biome.json` **不支持注释**，要用 `biome.jsonc`。
 
 ### 5. 换运行时要重新验，不要假设
@@ -115,9 +115,9 @@ node --test "packages/**/*.test.ts" "apps/**/*.test.ts"
 
 Deno 那次是靠**按顶层声明逐段截断、二分定位**找出来的（单文件检查不管用，照样崩）。换运行时之前先假设"结论会变"，全部重验一遍。
 
-## 第三方代码
+## 代码来源
 
-`packages/chat-core/` 迁移自 `@correct-ai/core@7.1.2`（MIT，Copyright (c) 2026 thautwarm），`LICENSE` 已随包保留。
+`packages/chat-core/` 从 `@correct-ai/core@7.1.2` 迁入本仓库，`LICENSE`（MIT，Copyright (c) 2026 thautwarm）随包保留。
 
 迁移时的改动，仅此三项：
 

@@ -1,7 +1,7 @@
 /**
  * 实现层入口：按方面拆开的实现在这里汇总。
  *
- * 这一层的形状和公开面（src/index.ts）的 CoreAgent 命名空间对齐：顶层是什么，这里就是
+ * 这一层的形状和公开面（src/index.ts）的 ChatAgent 命名空间对齐：顶层是什么，这里就是
  * 什么。所以顶层直接挂着的 append 就写在这里，不为一行函数单开文件；带子命名空间的
  * 那几个才各占一个文件，通过命名空间转出去。
  *
@@ -53,7 +53,7 @@ export function append<TOOLS extends ToolSet>(
  * 几个刻意的选择：
  * - 单步是显式写出来的（stopWhen 默认也是这个值）：一轮只推进一步，循环归应用。
  * - 工具不执行、也不审批：交给上游的 tools 先摘掉 execute 和 needsApproval，模型发起的
- *   调用只会停在 input-available，接着用 CoreAgent.tools 处理。
+ *   调用只会停在 input-available，接着用 ChatAgent.tools 处理。
  * - abort 归我们：上游的 StreamTextResult 没有 abort 方法，只能给它 signal，所以这里
  *   自己拿一个 controller，跟调用方传进来的 signal 合并。取消 chunks（reader.cancel()
  *   或消费者提前退出）走同一条路：底层请求跟着中止，result 以 aborted 拒绝。

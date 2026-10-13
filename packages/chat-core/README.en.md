@@ -9,9 +9,9 @@ model progress.
   contracts all use it.
 - The AI SDK's provider-facing `ModelMessage` is projected only at the moment a request is made,
   then discarded.
-- One turn = one `CoreAgent.request`: it advances one step and produces one assistant message.
+- One turn = one `ChatAgent.request`: it advances one step and produces one assistant message.
   Whether to continue is up to the application.
-- `CoreAgent` is a namespace, not something you instantiate. Everything under it is a stateless
+- `ChatAgent` is a namespace, not something you instantiate. Everything under it is a stateless
   function — no instances, no configuration.
 
 The upstream dependency is pinned to `ai@7.0.101`. Implementations live under `implementation/` and
@@ -21,7 +21,7 @@ mirror the public shape: members that hang directly off `Agent` are written in t
 ## Minimal usage (server)
 
 ```ts
-import { CoreAgent } from "@might/chat-core";
+import { ChatAgent } from "@might/chat-core";
 
 const conversation = {
   messages: [
@@ -29,30 +29,30 @@ const conversation = {
   ],
 };
 
-const run = CoreAgent.request({ conversation, model });
+const run = ChatAgent.request({ conversation, model });
 
 // Transport side: chunk stream → SSE response
-return CoreAgent.chunks.toHttpResponse(run.chunks);
+return ChatAgent.chunks.toHttpResponse(run.chunks);
 
 // Fact side: the one assistant message for this turn
 const message = await run.result;
-const next = CoreAgent.append(conversation, message);
+const next = ChatAgent.append(conversation, message);
 ```
 
 `run.result` settles once the stream is consumed, so "stream it back" and "persist it" are two sides
 of the same stream — you never read it twice.
 
-## Over HTTP: `CoreAgent.chunks`
+## Over HTTP: `ChatAgent.chunks`
 
-`CoreAgent.request` hands you a chunk stream that is not bound to any transport. Over HTTP, each
+`ChatAgent.request` hands you a chunk stream that is not bound to any transport. Over HTTP, each
 side converts once:
 
 ```ts
 // server: encode the chunk stream as an SSE response
-return CoreAgent.chunks.toHttpResponse(run.chunks);
+return ChatAgent.chunks.toHttpResponse(run.chunks);
 
 // client: turn the response back into the same kind of chunk stream
-const chunks = CoreAgent.chunks.fromHttpResponse(response);
+const chunks = ChatAgent.chunks.fromHttpResponse(response);
 ```
 
 Both sides use the same SSE encoding: the server writes `data: {...}\n\n` per chunk and ends with
@@ -62,14 +62,14 @@ chunk sequence is unchanged after a round trip.
 ## Client: chunks in, messages out
 
 ```ts
-for await (const message of CoreAgent.chunks.readMessages(chunkStream)) {
+for await (const message of ChatAgent.chunks.readMessages(chunkStream)) {
   render(message); // every yield is a full snapshot of the current message
 }
 ```
 
 The same message is yielded many times with a stable `id` and parts that grow towards completeness,
 so you never reassemble deltas yourself. `chunkStream` is the `ReadableStream<UIMessageChunk>` you
-got back from `CoreAgent.chunks.fromHttpResponse` above; the application side never sees chunks.
+got back from `ChatAgent.chunks.fromHttpResponse` above; the application side never sees chunks.
 
 ## Where the model and its parameters come from
 
@@ -77,7 +77,7 @@ The model instance, `generation`, and `providerOptions` are resolved by the call
 through untouched:
 
 ```ts
-const run = CoreAgent.request({
+const run = ChatAgent.request({
   conversation,
   model,
   generation,
@@ -106,15 +106,15 @@ const tools = {
   },
 };
 
-const run = CoreAgent.request({ conversation, model, tools });
+const run = ChatAgent.request({ conversation, model, tools });
 const message = await run.result;
-const next = CoreAgent.append(conversation, message);
+const next = ChatAgent.append(conversation, message);
 
 // calls the model made that the application has not answered yet
-const calls = CoreAgent.tools.pending(next);
+const calls = ChatAgent.tools.pending(next);
 
 // validation: the typed path
-for (const call of await CoreAgent.tools.validateTyped(calls, { tools })) {
+for (const call of await ChatAgent.tools.validateTyped(calls, { tools })) {
   if (call.kind === "invalid") report(call.diagnostic.issues); // diagnostics are a return value, not an exception
   if (call.kind === "closed" && call.toolName === "weather") {
     call.input.city; // string
@@ -122,8 +122,8 @@ for (const call of await CoreAgent.tools.validateTyped(calls, { tools })) {
 }
 
 // supply the results and advance another turn
-const answered = CoreAgent.tools.complete(next, [{ toolCallId, output }]);
-const second = CoreAgent.request({ conversation: answered, model, tools });
+const answered = ChatAgent.tools.complete(next, [{ toolCallId, output }]);
+const second = ChatAgent.request({ conversation: answered, model, tools });
 ```
 
 `request` ignores `execute` and `needsApproval` on tool definitions: neither field reaches the
@@ -142,18 +142,18 @@ Three possible results:
 | `open`    | a runtime tool declared through `openTools`; input stays `unknown`            |
 | `invalid` | unknown tool or invalid input; `diagnostic` carries the issue list            |
 
-`CoreAgent.tools.validate` is the untyped entry point for the same thing: use it when tool
+`ChatAgent.tools.validate` is the untyped entry point for the same thing: use it when tool
 definitions only appear at runtime, in which case `input` on the `closed` branch can only be
 `unknown`.
 
 ## Persistence
 
 ```ts
-const wire = CoreAgent.codec.serialize(conversation);
-const back = await CoreAgent.codec.deserialize(wire); // fail-closed on a version or structure mismatch
+const wire = ChatAgent.codec.serialize(conversation);
+const back = await ChatAgent.codec.deserialize(wire); // fail-closed on a version or structure mismatch
 ```
 
-`CoreAgent.codec.version` is the current format version. This layer only cares about format —
+`ChatAgent.codec.version` is the current format version. This layer only cares about format —
 whether that means a database or any other channel is up to you.
 
 ## What this does not do

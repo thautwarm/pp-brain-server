@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CoreAgent, IntelligenceError } from "./index.ts";
+import { ChatAgent, IntelligenceError } from "./index.ts";
 
 // 公开面冒烟：证明包能被 import、命名空间挂载齐全。
 // 注意本包迁移过来时自带的 test/ 目录是空的，这些是补的第一批测试。
-test("公开面：CoreAgent 的命名空间都在", () => {
-  assert.equal(typeof CoreAgent.append, "function");
-  assert.equal(typeof CoreAgent.request, "function");
-  assert.equal(typeof CoreAgent.tools.pending, "function");
-  assert.equal(typeof CoreAgent.chunks.toHttpResponse, "function");
-  assert.equal(typeof CoreAgent.chunks.fromHttpResponse, "function");
-  assert.equal(typeof CoreAgent.chunks.readMessages, "function");
+test("公开面：ChatAgent 的命名空间都在", () => {
+  assert.equal(typeof ChatAgent.append, "function");
+  assert.equal(typeof ChatAgent.request, "function");
+  assert.equal(typeof ChatAgent.tools.pending, "function");
+  assert.equal(typeof ChatAgent.chunks.toHttpResponse, "function");
+  assert.equal(typeof ChatAgent.chunks.fromHttpResponse, "function");
+  assert.equal(typeof ChatAgent.chunks.readMessages, "function");
 });
 
 test("IntelligenceError：携带 code，并保留 cause", () => {
@@ -31,7 +31,7 @@ test("chunks：服务端响应 → 客户端 chunk 流，来回收得回来", as
   };
 
   // 真跑一次：构造 chunk 流 → 转成 HTTP 响应 → 客户端解回来
-  const response = CoreAgent.chunks.toHttpResponse(
+  const response = ChatAgent.chunks.toHttpResponse(
     new ReadableStream({
       start(controller) {
         controller.enqueue({ type: "start", messageId: message.id });
@@ -45,7 +45,7 @@ test("chunks：服务端响应 → 客户端 chunk 流，来回收得回来", as
   );
 
   const decoded: string[] = [];
-  for await (const chunk of CoreAgent.chunks.fromHttpResponse(response)) {
+  for await (const chunk of ChatAgent.chunks.fromHttpResponse(response)) {
     decoded.push(chunk.type);
   }
 

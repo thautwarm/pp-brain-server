@@ -6,7 +6,7 @@ Agent 开发的 TypeScript monorepo。**Node 24 原生跑 TypeScript**，零构�
 package.json          工作区 + 脚本
 tsconfig.json         全仓库唯一一份，只服务 `tsc --noEmit`
 biome.jsonc           lint + format
-packages/chat-core/   @might/chat-core —— 模型会话的事实层（UIMessage / CoreAgent）
+packages/chat-core/   @might/chat-core —— 模型会话的事实层（UIMessage / ChatAgent）
 docs/                 调研文档
 ```
 
@@ -28,6 +28,6 @@ docs/                 调研文档
 
 **先读 [DEVDOCS.md](DEVDOCS.md)。** 里面写了为什么这么搭、加新包要动哪几个地方，以及 5 个实测撞出来的坑（其中 `node --test` 那条有安全含义）。
 
-## 授权
+## 代码来源
 
-`packages/chat-core/` 迁移自 `@correct-ai/core@7.1.2`（MIT，Copyright (c) 2026 thautwarm）。`LICENSE` 随包保留，迁移改动见 [DEVDOCS.md](DEVDOCS.md#第三方代码)。
+`packages/chat-core/` 从 `@correct-ai/core@7.1.2` 迁入本仓库，`LICENSE`（MIT，Copyright (c) 2026 thautwarm）随包保留。迁移改动见 [DEVDOCS.md](DEVDOCS.md#代码来源)。

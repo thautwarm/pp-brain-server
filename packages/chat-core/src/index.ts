@@ -329,7 +329,7 @@ export interface AgentRun<TOOLS extends ToolSet = ToolSet> {
 // 入口
 
 /**
- * CoreAgent：这一层的全部入口，一个命名空间，不是一个能被创建的对象。
+ * ChatAgent：这一层的全部入口，一个命名空间，不是一个能被创建的对象。
  *
  * 名字里那个 Core 是为了跟上面那层分开：这里只认 model / generation / providerOptions，
  * 完全不知道「模型卡片」这回事。以卡片为起点的那层在 @correct-ai/agent，
@@ -339,7 +339,7 @@ export interface AgentRun<TOOLS extends ToolSet = ToolSet> {
  * 一轮 = 一次 request，一次 request 只推进一步、只产出一条 assistant 消息；
  * 要不要继续，由应用自己决定（拿回消息、补工具结果、再 request 一次）。
  */
-export const CoreAgent = {
+export const ChatAgent = {
   /** 追加一条事实：用户消息，或一轮助手消息。 */
   append<TOOLS extends ToolSet>(
     conversation: Conversation<TOOLS>,
