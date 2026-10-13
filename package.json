@@ -12,7 +12,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "fmt": "biome format --write .",
-    "verify": "pnpm run check && pnpm run lint && pnpm test"
+    "verify": "pnpm run check && pnpm run lint && pnpm test",
+    "project": "node scripts/project.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

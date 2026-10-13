@@ -26,5 +26,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["packages/*/src", "apps/*"]
+  "include": ["packages/*/src", "apps/*/src", "scripts"]
 }

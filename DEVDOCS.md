@@ -38,14 +38,20 @@ lint + format biome                    biome.jsonc ×1
 
 ## 约定
 
-### 加一个新包
+### 加 / 删包
 
-1. 建目录，放一个 `package.json`，必须有 `name` 和 `exports`
-2. `pnpm-workspace.yaml` 的 `packages` glob 自动认领，不用改根配置
-3. 如果新目录不在 `packages/` 或 `apps/` 下，要**同时**改三处：
-   - `pnpm-workspace.yaml` 的 `packages`
-   - `tsconfig.json` 的 `include`
-   - `package.json` 的 `test` 脚本里的 glob（见坑 3）
+用项目命令，别手工建目录：
+
+```
+pnpm project new pkg <name>    创建 packages/<name>
+pnpm project new app <name>    创建 apps/<name>
+pnpm project del <name>        删除
+pnpm project list              列出当前工作区
+```
+
+新包只有两个文件（`package.json` + `src/index.ts`），因为 `pnpm-workspace.yaml` 的 glob、`tsconfig.json` 的 `include`、`test` 脚本的 glob 全是通配的，自动认领。建完记得 `pnpm install`。
+
+**不在 `packages/` 或 `apps/` 下建新顶层目录**时，仍要手工改三处：`pnpm-workspace.yaml` 的 `packages`、`tsconfig.json` 的 `include`、`package.json` 的 `test` 脚本里的 glob（见坑 3）。命令不会替你改这些。
 
 ### 包之间互相引用
 
@@ -139,3 +145,11 @@ pnpm <script> --help     # 打出 Usage: pnpm / Version，说明被内建命令�
 | Node | `'cancel' does not exist` 等假错误 | 见坑 1 |
 
 Deno 那次是靠**按顶层声明逐段截断、二分定位**找出来的（单文件检查不管用，照样崩）。换运行时之前先假设"结论会变"，全部重验一遍。
+
+### 7. 删包时留下悬空的 `workspace:*` 会锁死整个仓库
+
+pnpm 解析不到 workspace 依赖时，**不是只有那个包坏掉 —— 是仓库里所有 pnpm 命令全部拒绝运行**，包括 pre-run 的依赖检查。而 `pnpm project del` 本身也是个 pnpm 命令，所以一旦锁死，你连"用命令把引用清掉"都做不到，只能手工改 json。
+
+`pnpm project del` 因此**默认拒绝**删除还被依赖的包，列出引用方让你先处理；加 `--force` 才删，并且会**连带把引用方的依赖行一起清掉**。
+
+手工 `rm -rf` 删目录绕过了这层保护。所以：**删包一律走 `pnpm project del`。**

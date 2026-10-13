@@ -23,6 +23,7 @@ docs/                 调研文档
 | `pnpm lint`     | biome 检查                           |
 | `pnpm lint:fix` | biome 自动修                         |
 | `pnpm verify`   | 上面三个串起来                       |
+| `pnpm project`  | 建包 / 删包 / 列工作区（`--help` 看用法） |
 
 **验证脚本叫 `verify` 不叫 `ci`** —— `pnpm ci` 是 pnpm 的内建命令（清空重装），会把同名脚本吃掉且不报错。详见 [DEVDOCS.md](DEVDOCS.md)。
 
@@ -30,4 +31,4 @@ docs/                 调研文档
 
 ## 改这个仓库之前
 
-**先读 [DEVDOCS.md](DEVDOCS.md)。** 里面写了为什么这么搭、加新包要动哪几个地方，以及 6 个实测撞出来的坑。
+**先读 [DEVDOCS.md](DEVDOCS.md)。** 里面写了为什么这么搭、加新包要动哪几个地方，以及 7 个实测撞出来的坑。
