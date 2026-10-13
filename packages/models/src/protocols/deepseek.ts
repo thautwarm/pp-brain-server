@@ -1,7 +1,8 @@
+// DeepSeek here is a protocol rather than a provider or a model!
 import { z } from 'zod';
 import type { DeepSeekLanguageModelOptions } from "@ai-sdk/deepseek";
 import type { LanguageModel, LanguageModelCallOptions } from '@might/chat-core';
-import type { CreateModelOptions } from './types.ts';
+import type { CreateModelOptions } from '../types.ts';
 import { createDeepSeek } from '@ai-sdk/deepseek';
 
 export const name = "deepseek";

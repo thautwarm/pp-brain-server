@@ -1,5 +1,5 @@
 // @might/models
-import * as deepseek from './deepseek.ts';
+import * as deepseek from './protocols/deepseek.ts';
 import type { LanguageModelCard } from './types.ts';
 
 export {
