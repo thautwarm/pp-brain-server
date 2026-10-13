@@ -33,8 +33,10 @@ import * as implementation from "./implementation/index.ts";
  * 我们写在 AI SDK providerOptions / providerMetadata 上的命名空间。
  *
  * adapter 的媒体包装层和 core 读取媒体用量共用这一个源头，避免两侧各写一份字符串。
+ *
+ * 字符串值不要动：它是线上协议键，写入方在别的包里。改值不会报错，只会静默读不到。
  */
-export const CORRECT_AI_NAMESPACE = "CorrectAIFramework";
+export const MIGHT_NAMESPACE = "CorrectAIFramework";
 
 // 上游公开类型
 // 消费方只装本包也能拿到这些类型，不必自己再装 AI SDK。名字保持上游原名。
@@ -331,9 +333,7 @@ export interface AgentRun<TOOLS extends ToolSet = ToolSet> {
 /**
  * ChatAgent：这一层的全部入口，一个命名空间，不是一个能被创建的对象。
  *
- * 名字里那个 Core 是为了跟上面那层分开：这里只认 model / generation / providerOptions，
- * 完全不知道「模型卡片」这回事。以卡片为起点的那层在 @correct-ai/agent，
- * 形状就是这个命名空间再加一个 run。
+ * 只认 model / generation / providerOptions，不掺上层的业务概念。
  *
  * 像 OCaml / F# 的模块：底下全是无状态的函数，没有实例、没有配置、没有隐藏状态。
  * 一轮 = 一次 request，一次 request 只推进一步、只产出一条 assistant 消息；

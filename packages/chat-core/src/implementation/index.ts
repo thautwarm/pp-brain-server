@@ -34,7 +34,7 @@ import type {
   MessageUsage,
   ToolSet,
 } from "../index.ts";
-import { CORRECT_AI_NAMESPACE, IntelligenceError } from "../index.ts";
+import { IntelligenceError, MIGHT_NAMESPACE } from "../index.ts";
 
 /** 在会话末尾追加一条消息，返回新会话，不改动原对象和原数组。 */
 export function append<TOOLS extends ToolSet>(
@@ -299,7 +299,7 @@ function modelIdOf(model: LanguageModel): string | undefined {
  */
 function mediaUsageOf(providerMetadata: unknown): MediaUsage {
   if (providerMetadata === null || typeof providerMetadata !== "object") return {};
-  const ours = (providerMetadata as Record<string, unknown>)[CORRECT_AI_NAMESPACE];
+  const ours = (providerMetadata as Record<string, unknown>)[MIGHT_NAMESPACE];
   if (ours === null || typeof ours !== "object") return {};
   const media = ours as Record<string, unknown>;
   return {

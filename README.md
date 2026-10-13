@@ -27,7 +27,3 @@ docs/                 调研文档
 ## 改这个仓库之前
 
 **先读 [DEVDOCS.md](DEVDOCS.md)。** 里面写了为什么这么搭、加新包要动哪几个地方，以及 5 个实测撞出来的坑（其中 `node --test` 那条有安全含义）。
-
-## 代码来源
-
-`packages/chat-core/` 从 `@correct-ai/core@7.1.2` 迁入本仓库，`LICENSE`（MIT，Copyright (c) 2026 thautwarm）随包保留。迁移改动见 [DEVDOCS.md](DEVDOCS.md#代码来源)。

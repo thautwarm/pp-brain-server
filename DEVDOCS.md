@@ -114,15 +114,3 @@ node --test "packages/**/*.test.ts" "apps/**/*.test.ts"
 | Node | `'cancel' does not exist` 等假错误 | 见坑 1 |
 
 Deno 那次是靠**按顶层声明逐段截断、二分定位**找出来的（单文件检查不管用，照样崩）。换运行时之前先假设"结论会变"，全部重验一遍。
-
-## 代码来源
-
-`packages/chat-core/` 从 `@correct-ai/core@7.1.2` 迁入本仓库，`LICENSE`（MIT，Copyright (c) 2026 thautwarm）随包保留。
-
-迁移时的改动，仅此三项：
-
-1. 包名 `@correct-ai/core` → `@might/chat-core`
-2. 相对导入 `./x.js` → `./x.ts`（Node ESM 要求显式后缀）
-3. 格式化工具从 prettier 换成 biome
-
-**业务代码一行没动。** 在 Deno 下必须改写的那处类型（`InferToolInput<TOOLS[NAME]>` → `InferUITools<TOOLS>[NAME]["input"]`，为绕开坑 5）在 Node 下原样就能过，已改回原写法。
