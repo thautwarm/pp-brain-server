@@ -25,6 +25,8 @@ import type {
   UIDataTypes,
   UIMessage,
   UIMessageChunk,
+  UIMessagePart,
+  UITools,
 } from "ai";
 
 import * as implementation from "./implementation/index.ts";
@@ -36,11 +38,12 @@ import * as implementation from "./implementation/index.ts";
  *
  * 字符串值不要动：它是线上协议键，写入方在别的包里。改值不会报错，只会静默读不到。
  */
-export const MIGHT_NAMESPACE = "CorrectAIFramework";
+export const MIGHT_NAMESPACE = "MIGHT_FRAMEWORK";
 
 // 上游公开类型
 // 消费方只装本包也能拿到这些类型，不必自己再装 AI SDK。名字保持上游原名。
 
+export type MessagePart = UIMessagePart<UIDataTypes, UITools>
 export type { ProviderOptions } from "@ai-sdk/provider-utils";
 export type {
   ActiveTools,
@@ -56,6 +59,7 @@ export type {
   ToolSet,
   UIDataTypes,
   UIMessage,
+  UIMessagePart,
   UIMessageChunk,
   UITool,
   UITools,

@@ -1,4 +1,7 @@
-# @might/chat-core
+---
+hint: vercel ai sdk 也不是很干净，但是 v1 可以保持 snapshot，它大致说明了在 agent 接口方面，我们想要什么样的抽象。
+---
+# @might/chat/v1
 
 [English](./README.en.md) | 中文
 
