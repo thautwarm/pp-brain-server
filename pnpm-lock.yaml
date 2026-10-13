@@ -18,6 +18,15 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/audio:
+    dependencies:
+      '@ai-sdk/provider-utils':
+        specifier: 5.0.40
+        version: 5.0.40(zod@4.6.6)
+      ai:
+        specifier: 7.0.101
+        version: 7.0.101(zod@4.6.6)
+
   packages/chat-core:
     dependencies:
       '@ai-sdk/provider-utils':
@@ -26,6 +35,8 @@ importers:
       ai:
         specifier: 7.0.101
         version: 7.0.101(zod@4.6.6)
+
+  packages/models: {}
 
 packages:
 

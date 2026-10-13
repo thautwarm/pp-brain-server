@@ -8,6 +8,7 @@ pnpm-workspace.yaml   工作区 glob（pnpm 不读 package.json 的 workspaces �
 tsconfig.json         全仓库唯一一份，只服务 `tsc --noEmit`
 biome.jsonc           lint + format
 packages/chat-core/   @might/chat-core —— 模型会话的事实层（UIMessage / ChatAgent）
+packages/audio/       @might/audio —— 语音的事实层（合成 / 转写 / 转成 Ogg Opus）
 docs/                 调研文档
 ```
 
