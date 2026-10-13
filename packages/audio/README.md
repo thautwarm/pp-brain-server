@@ -43,9 +43,28 @@ transcript.text;
 const ogg = await AudioHelper.convertToOggOpus(uploadBytes);
 ```
 
-后面两个参数一般都不用给：跑哪条路（有 `build` / `image` / `direct` / `http` 四种，默认 build，
-部署用 `MIGHT_FFMPEG_RUNNER` 选，地址走 `MIGHT_FFMPEG_IMAGE` / `MIGHT_FFMPEG_BIN` / `MIGHT_FFMPEG_URL`）
-和转码参数（默认 32 kbps / 单声道 / 48 kHz，字段见 `TranscodeParams`）。
+后面两个参数一般都不用给：跑哪条路（默认 `wasm`，部署用 `MIGHT_FFMPEG_RUNNER` 选）和转码参数
+（默认 32 kbps / 单声道 / 48 kHz，字段见 `TranscodeParams`）。
+
+| kind | 怎么跑 | 沙箱 | 认哪些输入 |
+| --- | --- | --- | --- |
+| `wasm`（默认） | 原地跑 WASM 编解码器（libopus + Ogg muxer），不要进程也不要容器 | **WASM 本身就是沙箱** | WebM / Matroska（里面的 Opus、Vorbis、AAC… 都行）和 Ogg Opus |
+| `build` ／ `image` | 容器里的 ffmpeg | 有（禁网 + cgroup + 只读根 + 非 root） | 什么都认 |
+| `direct` | 宿主机的 ffmpeg | **没有** | 什么都认 |
+| `http` | POST 给一个转码服务 | **在那边，不在这边** | 看对面 |
+
+默认那条不用装任何外部程序：`@audio/*` 解出 PCM，libopus 编回 Ogg Opus，全程在原地，转一条 3 秒
+语音约 40 ms（比 `direct` 还快，省了起进程）。
+
+它认的输入有边界（没有 mp4 的解复用器），所以默认路会**自己兜底**：认不出的格式自动换 `build`
+（容器里的 ffmpeg）再跑一次——mp4、mp3、wav 照转（实测 Safari 那种 m4a：wasm 直接拒，兜底 290 ms
+转完），调用点什么都不用管；两个都没成，错误里会同时说清是哪两条路没成。
+
+> 依赖里有 GPL：`@audio/decode-webm` 会把 `decode-aac` / `decode-ac3` / `decode-dts`（都是 GPL-2.0）
+> 当普通依赖装进来，这也是为什么 Matroska 里的 AAC 现在能直接转。**这事先搁置**——项目还是私用，
+> 等开源前再清：计划是自己 vendor、去掉 AAC 自己编 wasm，换 `implementation/wasm-runner.ts` 一个文件。
+
+显式点了 kind 就不兜底——说了用哪条就是哪条。
 
 ```ts
 await AudioHelper.convertToOggOpus(bytes);                            // 看环境变量
@@ -53,12 +72,12 @@ await AudioHelper.convertToOggOpus(bytes, { kind: "direct" });        // 明确�
 await AudioHelper.convertToOggOpus(bytes, undefined, { bitrateKbps: 16 });
 ```
 
-`build` / `image` 在容器里跑（禁网 + cgroup 限额 + 只读根 + 非 root），`direct` 和 `http` **没有沙箱**。
-生产启动时断言一次：
+`wasm`（WASM 本身碰不到外面）和 `build` / `image`（容器隔离）是安全的，`direct` 和 `http`
+**没有沙箱**。生产启动时断言一次：
 
 ```ts
 const status = await AudioHelper.inspectRunner();
-if (status.kind !== "container" && status.kind !== "http") {
+if (!["container", "http", "wasm"].includes(status.kind)) {
   throw new Error(`ffmpeg 没跑在沙箱里：${status.kind} ${status.detail ?? ""}`);
 }
 ```

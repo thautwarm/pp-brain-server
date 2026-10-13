@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 
-import { postForOgg } from "./implementation/ffmpeg.ts";
+import { postForOgg } from "./implementation/transcode.ts";
 import { AudioError, AudioHelper } from "./index.ts";
 
 // 命名空间里的函数，测试里拆出来用（没有 this 依赖）。

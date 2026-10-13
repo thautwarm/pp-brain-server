@@ -58,3 +58,50 @@
 
 **换镜像 = 换编码器版本**：同一个输入、同样的参数，两个镜像产出的字节不同，**解出来的 PCM 也不同**
 （79.6% 的采样差一点，最大差 119/32767 ≈ −49 dBFS，听不出来）。别指望"换个镜像输出不变"。
+
+## 纯 WASM 那条路（`wasm` runner，默认）
+
+`@audio/*` 解码 → libopus 编码 → 内置 Ogg muxer，没有进程、没有容器、没有 ffmpeg。
+
+**默认 + 兜底**：不给 runner 时走这条；它认不出的格式（mp3 / wav / mp4…）自动换 `build`（容器）
+再跑一次，实测一条 0.3 秒的 WAV 走兜底共 233 ms（换容器那趟是主要开销）。认不出的格式在 sniff
+那一步就返回了，所以第一次尝试不浪费解码。
+
+**实测**（同一段 2.88 秒 webm/opus，本机）：
+
+| 路 | 耗时（3 次） | 输出 |
+| --- | --- | --- |
+| `wasm` | 37 / 55 / 38 ms | 12111 字节 |
+| `direct`（宿主 ffmpeg） | 74 / 82 / 84 ms | 12231 字节 |
+| `build`（容器） | 250 / 242 / 261 ms | 12231 字节 |
+
+比 `direct` 快是因为省掉了起进程；输出过我们自己的 Ogg 解析器（时长 2.88s，跟 ffmpeg 那条路一致），
+喂给线上 ASR 转写结果也完全正确。
+
+**证与覆盖**（这是选它的唯一硬约束——AAC 的解码器是 GPL，没引）：
+
+| 包 | 证 | 用途 |
+| --- | --- | --- |
+| `@audio/encode-opus` | MIT（libopus 本身 BSD-3） | PCM → Ogg Opus（带 Ogg muxer，单文件模块） |
+| `@audio/decode-webm` | MIT | WebM/Matroska → PCM（Opus、Vorbis 内置） |
+| `@audio/decode-opus` | MIT | Ogg Opus → PCM |
+| `@audio/decode-aac` | **GPL-2.0** | 被 decode-webm 当**普通依赖**带进来的（faad2） |
+| `@audio/decode-ac3` | **GPL-2.0-or-later** | 同上 |
+| `@audio/decode-dts` | **GPL-2.0-or-later** | 同上 |
+| `@audio/decode-eac3` | LGPL-2.1-or-later | 同上（LGPL，没事） |
+| `@audio/decode-mp3` / `-flac` / `-vorbis` | MIT | 同上；目前的嗅探只认 WebM / Ogg Opus，这些还没接进文件级识别 |
+
+**GPL 这件事先搁置**（2026-10-13 决定）：项目还是私用，等开源前再清——计划是自己 vendor、去掉
+AAC 那部分自己编 wasm，换掉 `packages/audio/src/implementation/wasm-runner.ts` 一个文件就行
+（`@audio` 只在那一个文件里出现）。
+
+**实测覆盖**（默认路 = wasm，认不出就兜底换容器）：
+
+| 输入 | 显式 `wasm` | 默认路 |
+| --- | --- | --- |
+| WebM/Opus（Chrome 录的） | ✓ 54 ms | ✓ 42 ms（wasm） |
+| Matroska + AAC（.mka） | ✓ 61 ms | ✓ 33 ms（wasm，靠 GPL 那个解码器） |
+| MP4 + AAC（.m4a，Safari 录的） | ✗ 直接拒（没有 mp4 解复用器） | ✓ 290 ms（兜底到容器） |
+
+内存：输入按 64 KB 切片流式喂，不把整段 PCM 攒在内存里（10 分钟音频的 PCM 是 100 MB 级）。
+时间：WASM 是同步的，跑起来掐不断，所以超时只能在片与片之间判。

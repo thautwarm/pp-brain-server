@@ -2,10 +2,11 @@
  * 任意音频 → Ogg Opus。**全在这一个文件里**，顺着读就是全部：
  *
  *   argsFor(params)                参数 → ffmpeg 的参数数组（纯函数，不起进程）
- *   plan(runner, args)             参数数组 → 怎么执行：direct 直接 exec；
- *                                  build/image 是在同一个数组前面套一层 `docker run`；
- *                                  http 是 POST 出去。
- *   spawnAndCollect / postForOgg   真的跑，管生命周期：喂 stdin、截住 stdout、
+ *   plan(runner, args)             选路：direct 直接 exec；build/image 是在同一个数组
+ *                                  前面套一层 `docker run`；http 是 POST 出去；
+ *                                  wasm 是原地跑 WASM 编解码器，没有进程也没有容器。
+ *   spawnAndCollect / postForOgg / runWasm
+ *                                  真的跑，管生命周期：喂 stdin、截住 stdout、
  *                                  超时就杀（容器还要点名杀）、超量就断。
  *   ensureAudible                  出口只有这一个：本地产的、对面返回的，都过同一关。
  *
@@ -18,6 +19,8 @@ import { promisify } from "node:util";
 
 import type { RunnerOptions, RunnerStatus, TranscodeParams } from "../index.ts";
 import { AudioError } from "../index.ts";
+// @audio 那些包只在 wasm-runner.ts 里出现，要 vendor 自己编 wasm 就换那一个文件。
+import { runWasm } from "./wasm-runner.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -119,6 +122,7 @@ type Plan =
       readonly engineVersion: string;
     }
   | { readonly kind: "http"; readonly url: string }
+  | { readonly kind: "wasm"; readonly fallback: boolean }
   | { readonly kind: "unavailable"; readonly detail: string };
 
 /** direct：参数数组就是全部，跑宿主机的 ffmpeg。 */
@@ -209,7 +213,11 @@ const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
  * 所以生产里通常只有 MIGHT_FFMPEG_RUNNER 一个变量，代码里连 runner 都不用写。
  */
 async function plan(runner: RunnerOptions | undefined, args: readonly string[]): Promise<Plan> {
-  const kind = runner?.kind ?? process.env["MIGHT_FFMPEG_RUNNER"] ?? "build";
+  // 不给就用 wasm：不用装任何外部程序、不用容器，而且比 ffmpeg 还快。
+  // 它是**默认**而不是唯一：认不出的格式（mp4/AAC 那种 GPL 解码器没引的）自动换容器跑，
+  // 见 convertToOggOpus 里的 fallback。调用点明确点了 kind 就不替它兜底——说了要用哪条路就是哪条路。
+  const chosen = runner?.kind ?? process.env["MIGHT_FFMPEG_RUNNER"];
+  const kind = chosen ?? "wasm";
   // kind 可能是环境变量给的，所以这里窄化不了 runner 的联合类型，逐个字段各取各的。
   const engine =
     (runner?.kind === "build" || runner?.kind === "image" ? runner.engine : undefined) ??
@@ -264,6 +272,9 @@ async function plan(runner: RunnerOptions | undefined, args: readonly string[]):
         engineVersion,
       };
     }
+
+    case "wasm":
+      return { kind: "wasm", fallback: chosen === undefined };
 
     case "http": {
       const url =
@@ -607,6 +618,21 @@ function ensureAudible(bytes: Buffer): Buffer {
 
 // ── 公开的两个函数 ──────────────────────────────────────────────────────────
 
+/** 选好的路 → 真的跑。四种执行各一分支，失败**不在这层归因**，只把事实交回去。 */
+type Runnable = Exclude<Plan, { kind: "unavailable" }>;
+
+function execute(chosen: Runnable, options: Params, input: Uint8Array): Promise<Result> {
+  switch (chosen.kind) {
+    case "http":
+      return postForOgg(chosen.url, options, input, options);
+    case "wasm":
+      return runWasm(options, input);
+    case "direct":
+    case "container":
+      return spawnAndCollect(chosen.execution, input, options);
+  }
+}
+
 export async function convertToOggOpus(
   input: Uint8Array,
   runner?: RunnerOptions,
@@ -627,14 +653,25 @@ export async function convertToOggOpus(
 
   let result: Result;
   try {
-    result =
-      chosen.kind === "http"
-        ? await postForOgg(chosen.url, options, input, options)
-        : await spawnAndCollect(chosen.execution, input, options);
+    result = await execute(chosen, options, input);
+    if (result.failed !== undefined && chosen.kind === "wasm" && chosen.fallback) {
+      // 默认走的 wasm 认不出这个格式（mp4/AAC、mp3、wav……），换容器再来一次。
+      // 这一步不白跑：认不出的格式在 sniff 那一步就返回了，没解过任何字节。
+      const container = await plan({ kind: "build" }, argsFor(options));
+      result =
+        container.kind === "unavailable"
+          ? { ...result, failed: `${result.failed}；容器那条路也起不来：${container.detail}` }
+          : await execute(container, options, input);
+    }
   } catch (cause) {
     // 进程都起不来（ENOENT）是部署问题，不是这个文件的问题。
     if (errorCodeOf(cause) === "ENOENT") {
-      const what = chosen.kind === "http" ? chosen.url : chosen.execution.command;
+      const what =
+        chosen.kind === "http"
+          ? chosen.url
+          : chosen.kind === "wasm"
+            ? "wasm 解码器"
+            : chosen.execution.command;
       throw new AudioError({ code: "ffmpeg-missing", detail: `找不到 ${what}` }, { cause });
     }
     throw cause;
@@ -690,6 +727,8 @@ export async function inspectRunner(runner?: RunnerOptions): Promise<RunnerStatu
       return { kind: "unavailable", detail: chosen.detail };
     case "http":
       return { kind: "http", target: chosen.url };
+    case "wasm":
+      return { kind: "wasm", target: "libopus (WASM)" };
     case "direct":
       return { kind: "direct", target: chosen.execution.command };
     case "container":

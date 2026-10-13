@@ -221,15 +221,20 @@ export const AudioAgent = {
 // 本地转码
 
 /**
- * 跑这一趟用哪条路。**这是部署决定的事**：不给就整条看环境变量（MIGHT_FFMPEG_RUNNER，
- * 默认 build），所以生产的调用点通常不出现它。
+ * 跑这一趟用哪条路。**这是部署决定的事**：不给就整条看环境变量（MIGHT_FFMPEG_RUNNER），
+ * 所以生产的调用点通常不出现它。
  *
- * - `build`（默认）自建容器：用自带的 Dockerfile 构建 alpine + ffmpeg，构建一次之后复用
- * - `image` 指定镜像：本地没有就报错，**绝不隐式拉取**；镜像名不给看 MIGHT_FFMPEG_IMAGE
+ * - `wasm`（默认）原地跑 WASM 编解码器（libopus + Ogg muxer）：不要进程、不要容器、不要
+ *   ffmpeg，比另外几条还快；但它只认装了 MIT 解码器的格式——WebM 和 Ogg Opus。
+ *   **默认路会自己兜底**：认不出的格式（mp4/AAC、mp3、wav……）自动换 `build` 再跑一次。
+ * - `build` 自建容器：用自带的 Dockerfile 构建 alpine + ffmpeg，构建一次之后复用。什么都认，
+ *   但要容器运行时
+ * - `image` 指定镜像：同上，镜像名不给看 MIGHT_FFMPEG_IMAGE；本地没有就报错，**绝不隐式拉取**
  * - `direct` 不用容器，直接跑宿主机的 ffmpeg；路径不给看 MIGHT_FFMPEG_BIN，再不给找 PATH
  * - `http` 丢给一个 HTTP 服务跑；地址不给看 MIGHT_FFMPEG_URL（契约见 README）
  *
- * 前两种要容器运行时。容器运行时连不上就直接失败，**不会悄悄退化成 direct**。
+ * **显式点了 kind 就不替它兜底**：选了哪条就是哪条，连不上/认不出都直接失败，
+ * 不会悄悄换成另一条（`build` / `image` 找不到容器运行时也不会退化成 `direct`）。
  */
 export type RunnerOptions =
   | { readonly kind: "build"; readonly engine?: string }
@@ -240,10 +245,11 @@ export type RunnerOptions =
       readonly engine?: string;
     }
   | { readonly kind: "direct"; readonly bin?: string }
-  | { readonly kind: "http"; readonly url?: string };
+  | { readonly kind: "http"; readonly url?: string }
+  | { readonly kind: "wasm" };
 
 export interface RunnerStatus {
-  readonly kind: "container" | "direct" | "http" | "unavailable";
+  readonly kind: "container" | "direct" | "http" | "wasm" | "unavailable";
   /** container 是镜像名，direct 是 ffmpeg 路径，http 是服务地址。 */
   readonly target?: string;
   /** 容器运行时的版本。 */

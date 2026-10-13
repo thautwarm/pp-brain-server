@@ -28,7 +28,7 @@ import type {
 import { AudioError } from "../index.ts";
 
 // 本地转码（含 http runner）全在 ffmpeg.ts 一个文件里，公开面要什么这里转出去什么。
-export { convertToOggOpus, inspectRunner } from "./ffmpeg.ts";
+export { convertToOggOpus, inspectRunner } from "./transcode.ts";
 
 /**
  * 文件读写：`node:fs` 是**动态加载**的，模块求值时不碰它。浏览器打包进来也不会因为一句

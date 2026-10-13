@@ -8,7 +8,7 @@ import {
   isOggOpus,
   oggOpusDuration,
   spawnAndCollect,
-} from "./implementation/ffmpeg.ts";
+} from "./implementation/transcode.ts";
 import { AudioError, AudioHelper } from "./index.ts";
 
 // 命名空间里的函数，测试里拆出来用（没有 this 依赖）。
@@ -195,10 +195,16 @@ test("超时能被抓住，而且进程真的死了", async () => {
   assert.ok(Date.now() - started < 5_000, "没在超时后立刻结束");
 });
 
-test("inspectRunner 说得出自己会走哪条路", async () => {
-  const status = await inspectRunner();
-  assert.ok(["container", "direct", "unavailable"].includes(status.kind));
-  if (status.kind !== "unavailable") assert.equal(typeof status.target, "string");
+test("inspectRunner：不给配置时默认走 wasm", async () => {
+  const saved = process.env["MIGHT_FFMPEG_RUNNER"];
+  delete process.env["MIGHT_FFMPEG_RUNNER"];
+  try {
+    const status = await inspectRunner();
+    assert.equal(status.kind, "wasm");
+    assert.equal(typeof status.target, "string");
+  } finally {
+    if (saved !== undefined) process.env["MIGHT_FFMPEG_RUNNER"] = saved;
+  }
 });
 
 test("自建容器转一次，输出一样是合法的 Ogg Opus", { skip: needsContainer }, async () => {
