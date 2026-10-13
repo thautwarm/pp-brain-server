@@ -1,0 +1,12 @@
+{
+  "name": "@might/chat-core",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "ai": "7.0.101",
+    "@ai-sdk/provider-utils": "5.0.40"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  // 全仓库唯一一份 tsconfig。只用来跑 `tsc --noEmit` 做类型检查——
+  // 运行时由 Node 自己剥离类型，不读这个文件，也没有任何构建产物。
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "esnext",
+
+    // 一定要排掉 DOM：TS 自带的 lib.dom.d.ts 里 Transformer 少了 cancel，
+    // 且会盖住 @types/node 里正确的定义，导致 TransformStream 报假错误。
+    // 服务端库本来也不该有 DOM。
+    "lib": ["esnext"],
+    "types": ["node"],
+
+    // Node 直接跑 .ts，所以导入里必须写 .ts 后缀——但默认 tsc 不允许这么写。
+    "allowImportingTsExtensions": true,
+    // Node 只做类型剥离，碰不了 enum / namespace / 参数属性。开了这个，
+    // 这些写法会在检查期就报错，而不是等到运行时才炸。
+    "erasableSyntaxOnly": true,
+
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["packages/*/src", "apps/*"]
+}

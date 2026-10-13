@@ -1,0 +1,8 @@
+{
+  // 让 biome 认 .gitignore —— tmp/ 就是靠这一条挡在外面的，
+  // 不然 lint:fix 会去改写那份第三方解包代码。CLI 的 --vcs-use-ignore-file 实测无效。
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+
+  // biome 默认用 tab 缩进，跟我们不一致，必须显式声明。
+  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 }
+}

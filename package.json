@@ -1,0 +1,25 @@
+{
+  "name": "might",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test \"packages/**/*.test.ts\" \"apps/**/*.test.ts\"",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "fmt": "biome format --write .",
+    "ci": "npm run check && npm run lint && npm test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

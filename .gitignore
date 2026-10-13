@@ -1,0 +1,15 @@
+# 依赖（Node 仍然会建，但只是软链，很小）
+node_modules/
+
+# 外部解压进来的东西，不属于本仓库。
+# 注意：biome 的排除也依赖这一条（biome.jsonc 里开了 useIgnoreFile）。
+tmp/
+
+# 环境变量
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# 没有 dist/ —— 这个仓库不产出任何 JS 文件
