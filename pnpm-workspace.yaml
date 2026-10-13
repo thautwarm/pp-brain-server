@@ -1,0 +1,5 @@
+# pnpm 不读 package.json 的 workspaces 字段，工作区只能写在这里。
+# 这是选 pnpm 相比 npm 多出来的唯一一个文件。
+packages:
+  - "packages/*"
+  - "apps/*"

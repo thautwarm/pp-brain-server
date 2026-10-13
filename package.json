@@ -2,20 +2,17 @@
   "name": "might",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.18.0",
   "engines": {
     "node": ">=24"
   },
-  "workspaces": [
-    "packages/*",
-    "apps/*"
-  ],
   "scripts": {
     "check": "tsc --noEmit",
     "test": "node --test \"packages/**/*.test.ts\" \"apps/**/*.test.ts\"",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "fmt": "biome format --write .",
-    "ci": "npm run check && npm run lint && npm test"
+    "verify": "pnpm run check && pnpm run lint && pnpm test"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

@@ -1,4 +1,4 @@
-# 依赖（Node 仍然会建，但只是软链，很小）
+# 依赖。pnpm 下这里只有软链，真身在全局 store 和 node_modules/.pnpm/
 node_modules/
 
 # 外部解压进来的东西，不属于本仓库。
