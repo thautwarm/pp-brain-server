@@ -1,10 +1,10 @@
 // DeepSeek here is a protocol rather than a provider or a model!
 
 import type { OpenAICompatibleCompletionProviderOptions } from "@ai-sdk/openai-compatible";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import type { Credential } from "../../auth.ts";
 import type { LanguageModel, LanguageModelCallOptions } from "../abstraction/index.ts";
+import { createOpenAICompatibleWithOgg } from "./openai-compatible-ogg.ts";
 
 type CreateModelOptions<Args> = {
   /**
@@ -45,16 +45,22 @@ export function prepare(options: CreateModelOptions<z.infer<typeof parameters>>)
   // `doStream`，直接丢给 AI SDK 会在 `resolvedModel.provider.split(".")` 上炸
   // （TypeError: Cannot read properties of undefined (reading 'split')）。
   //
+  // 用我们自己的那个薄包装（`openai-compatible-ogg`）而不是直接用 createOpenAICompatible：
+  // 后者把音频格式白名单写死成 wav/mp3，喂不进 Ogg Opus。
+  //
   // 末尾那个 cast 是**名义问题**：ai@7 自带 @ai-sdk/provider@4.0.14，而这个 provider 依赖 4.0.27，
   // 两份副本的同名类型互不兼容。钉 provider 版本能消掉它，但那会牵动整个 workspace 的解析，
   // 这里就用 cast 明说"我知道，是同一个接口"。
-  const languageModel = createOpenAICompatible({
-    name: "deepseek",
-    apiKey: credential.auth.apiKey,
-    baseURL: credential.baseURL,
-    fetch,
-    headers,
-  }).chatModel(model) as unknown as LanguageModel;
+  const languageModel = createOpenAICompatibleWithOgg(
+    {
+      name: "deepseek",
+      apiKey: credential.auth.apiKey,
+      baseURL: credential.baseURL,
+      fetch,
+      headers,
+    },
+    model,
+  ) as unknown as LanguageModel;
 
   // default: 1.0 (https://api-docs.deepseek.com/quick_start/parameter_settings/)
   generation.temperature = args.temperature ?? 1;
