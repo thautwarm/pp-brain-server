@@ -76,6 +76,18 @@ export const Format = {
 
     return muted ? spoken : spoken + rest;
   },
+
+  /**
+   * 这段文本该用什么语言念：**全是 ASCII 就当英文**，否则不指定（交给服务端默认）。
+   *
+   * 只看"字符集"这一个判据是有意的 —— 需要它的场景只有一个：要不要按中文念。中日韩全在
+   * ASCII 之外，所以"有没有非 ASCII 字符"就是这个问题最短的答案，不用做语种识别。
+   *
+   * 副作用：带重音的拉丁字母（café）也会落到默认。那种情况少见，不值得为它加规则。
+   */
+  ttsLanguage(text: string): "en" | undefined {
+    return /^[\x00-\x7f]*$/.test(text) ? "en" : undefined;
+  },
 };
 
 export class SizedQueueOps {

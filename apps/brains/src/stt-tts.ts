@@ -1,6 +1,8 @@
 import type { SpeechModel, TranscriptionModel } from "@might/audio";
 import { AudioAgent, AudioHelper } from "@might/audio";
 
+import { Format } from "./format.ts";
+
 /**
  * STT / TTS：两个写死的 OpenAI 兼容端点。
  *
@@ -59,6 +61,8 @@ export async function callVoiceGen(
     model: ttsModel(),
     text,
     voice,
+    // 全是 ASCII 就当英文念（见 Format.ttsLanguage）；否则不指定，走服务端默认。
+    language: Format.ttsLanguage(text),
     outputFormat: "opus",
     abortSignal: options.signal,
     maxRetries: 3,

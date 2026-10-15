@@ -7,5 +7,17 @@
 #     对：["员工3"]      错：[员工3]
 #   规则是坏的，报错是 "illegal character in key"，不带行号，第一次很难看出来。
 
+[device-a]
+voice = "voice-1"
+
+[device-b]
+voice = "voice-3"
+
+[device-c]
+voice = "voice-4"
+
+[device-d]
+voice = "voice-2"
+
 [example-a]
 voice = "voice-3"

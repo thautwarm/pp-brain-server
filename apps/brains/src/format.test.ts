@@ -21,6 +21,18 @@ test("Format：进 prompt 的标签逐字钉住", () => {
   assert.equal(Format.claimAgentResponse("好的"), "<agent-response>好的</agent-response>");
 });
 
+test("Format.ttsLanguage：全是 ASCII 才当英文", () => {
+  assert.equal(Format.ttsLanguage("Hello, how are you?"), "en");
+  assert.equal(Format.ttsLanguage("OK"), "en");
+  assert.equal(Format.ttsLanguage("123, 456.78"), "en");
+  assert.equal(Format.ttsLanguage(""), "en"); // 空串没有非 ASCII；反正空文本不会进 TTS
+
+  // 有中文（或任何非 ASCII）就不指定，交给服务端默认
+  assert.equal(Format.ttsLanguage("你好"), undefined);
+  assert.equal(Format.ttsLanguage("Hello，你好"), undefined); // 全角逗号也是非 ASCII
+  assert.equal(Format.ttsLanguage("café"), undefined); // 带重音的拉丁字母也落默认（已知取舍）
+});
+
 test("Format.forTts：只影响念，标记和段内内容全去掉", () => {
   const OFF = "<!-- disable voice -->";
   const ON = "<!-- enable voice -->";
