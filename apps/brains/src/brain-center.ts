@@ -185,7 +185,16 @@ async function backgroundTaskStep() {
                 try {
                     backgroundTaskState.tts++;
                     SizedQueueOps.removeByIdentity(brain.inbounds.agent, it)
-                    const ttsResult = await callVoiceGen(it.text, brain.voice, { signal: undefined })
+
+                    // 念的是 forTts 过的那份（`<!-- disable voice -->` 段不念），
+                    // 推给人类的 text 还是原文 —— "不念"不等于"不显示"。
+                    const spoken = Format.forTts(it.text)
+                    if (spoken.trim() === "") {
+                        console.warn(`[tts] ${brainId} 整段都被静音了，跳过合成 ${brief(it.text)}`)
+                        return
+                    }
+
+                    const ttsResult = await callVoiceGen(spoken, brain.voice, { signal: undefined })
                     SizedQueueOps.push(brain.outbounds.human, { text: it.text, audio: ttsResult.audio }, 12)
                 }
                 catch (e) {
