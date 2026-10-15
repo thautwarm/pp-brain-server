@@ -42,25 +42,61 @@ export function createOpenAICompatibleWithOgg(
   options: OggChatModelOptions,
   modelId: string,
 ): LanguageModelV4 {
-  const base = createOpenAICompatible({
-    name: options.name,
-    baseURL: options.baseURL,
-    apiKey: options.apiKey,
-    headers: options.headers,
-    fetch: options.fetch,
-    transformRequestBody: withOggAudioFormat,
-  }).chatModel(modelId);
+  // 每次调用**另造一个** provider：这样 `transformRequestBody` 能闭包住"这一次"的 reasoning，
+  // 并发下各是各的，不会串。造 provider / model 只是搭几个闭包，没有任何 I/O。
+  const modelFor = (reasoning: LanguageModelV4CallOptions["reasoning"]) =>
+    createOpenAICompatible({
+      name: options.name,
+      baseURL: options.baseURL,
+      apiKey: options.apiKey,
+      headers: options.headers,
+      fetch: options.fetch,
+      transformRequestBody: (body) => withReasoningEffort(withOggAudioFormat(body), reasoning),
+    }).chatModel(modelId);
 
-  // 只包这一层：其余一律转发。`specificationVersion` / `provider` / `modelId` 照原样透出来，
-  // 别在这里另起名字 —— 上层（AI SDK）会拿它们做判别和记账。
+  // 只是拿一份静态元数据（provider / modelId / supportedUrls），
+  // 上层（AI SDK）用它们做判别和记账，所以照原样透出去，别在这里另起名字。
+  const meta = modelFor(undefined);
+
   return {
-    specificationVersion: base.specificationVersion,
-    provider: base.provider,
-    modelId: base.modelId,
-    supportedUrls: base.supportedUrls,
-    doGenerate: (callOptions) => base.doGenerate(declareOggAsWav(callOptions)),
-    doStream: (callOptions) => base.doStream(declareOggAsWav(callOptions)),
+    specificationVersion: meta.specificationVersion,
+    provider: meta.provider,
+    modelId: meta.modelId,
+    supportedUrls: meta.supportedUrls,
+    doGenerate: (callOptions) =>
+      modelFor(callOptions.reasoning).doGenerate(declareOggAsWav(callOptions)),
+    doStream: (callOptions) =>
+      modelFor(callOptions.reasoning).doStream(declareOggAsWav(callOptions)),
   };
+}
+
+/**
+ * 把 AI SDK 的 `reasoning` 档位翻成服务端认的 `reasoning_effort`。
+ *
+ * 为什么落在楔子里：`@ai-sdk/openai-compatible` **不认** AI SDK 那个统一的 `reasoning` 选项 ——
+ * 抓包看它一个字段都不发，所以 `generation.reasoning` 之前是空操作。
+ *
+ * 这张表是按**小米**校准的（它对取值是校验的：乱给直接 400，`minimal` / `xhigh` 也在 400 那边）：
+ * 认不出的、以及 `provider-default`，一律**不塞**，让服务端用自己的默认值 —— 宁可少发也别 400。
+ * 换端点时这张表就是唯一要看的地方。
+ */
+const REASONING_EFFORT: Record<string, string | undefined> = {
+  "provider-default": undefined, // 不塞 = 用服务端默认
+  none: "none",
+  minimal: "low", // 小米不认 minimal
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "max", // 小米不认 xhigh；xhigh 本来就是"再高一档"，拿最高档兜
+  max: "max",
+};
+
+function withReasoningEffort(
+  body: Record<string, unknown>,
+  reasoning: LanguageModelV4CallOptions["reasoning"],
+): Record<string, unknown> {
+  const effort = REASONING_EFFORT[reasoning ?? "provider-default"];
+  return effort === undefined ? body : { ...body, reasoning_effort: effort };
 }
 
 /** ① 把 prompt 里 `audio/ogg` 的 file part 声明成 `audio/wav`（字节不动）。 */
