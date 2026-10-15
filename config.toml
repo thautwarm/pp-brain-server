@@ -8,4 +8,4 @@
 #   规则是坏的，报错是 "illegal character in key"，不带行号，第一次很难看出来。
 
 [example-a]
-voice = "voice-2"
+voice = "voice-3"

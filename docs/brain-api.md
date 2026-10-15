@@ -77,8 +77,30 @@ body 有两种编码，带不带二进制说了算：
 **request**：
 
 ```ts
-{ brain_id: string, audio: Uint8Array }   // audio = Ogg Opus 16kHz（见 §4）
+{
+  brain_id: string,
+  audio: Uint8Array,              // Ogg Opus 16kHz（见 §4）
+  unheard_text?: string | null,   // 打断时补的，见下
+}
 ```
+
+`unheard_text` 是**打断**时补上来的那段：agent 已经说出来、但人类没听到的话。**可空** —— 不给、
+给 `null`、给空串都算"这次没有"。
+
+给了的话，brain 会把它裹成下面这个块，**插在交给 agent 的文本前面**（也就是 §1.4 取到的东西）：
+
+```
+<unheard_text reason="用户打断讲话">
+第一句没听完
+第二句也没听完
+</unheard_text>
+<asr-recognized-text>…</asr-recognized-text>
+```
+
+> ⚠️ 注意它裹的**不是**人类说的话，是 agent 自己说过、人类没听到的话 —— 跟
+> `<asr-recognized-text>` 不是一类，别混。
+>
+> 多行时内容两侧各留一个换行、内容 trim 掉（单行则原样贴着标签）。`reason` 目前写死。
 
 **response**：
 
@@ -155,8 +177,8 @@ agent 把一段文本交给 brain。
 | { kind: "text", text: string }
 ```
 
-> 内容多半是人类语音的转录，也可能是别的东西（压缩后的 history、工具结果）——
-> 所以这里只承诺是文本，不承诺它一定是转录。
+> 内容多半是人类语音的转录，也可能是别的东西（`<unheard_text>` 打断块 —— 见 §1.1、压缩后的
+> history、工具结果、修订给的警告）—— 所以这里只承诺是文本，不承诺它一定是转录。
 
 ---
 

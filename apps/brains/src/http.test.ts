@@ -207,8 +207,8 @@ test("错误响应一律 text/plain，不长得像成功响应", async () => {
 
 // human-to-brain：解包 msgpack，返回转录
 
-test("human-to-brain 解包 msgpack，把音频原样交给 brain，返回转录文本", async () => {
-  let seen: { brain_id: string; audio: Uint8Array } | undefined;
+test("human-to-brain 解包 msgpack，把音频和 unheard_text 原样交给 brain，返回转录文本", async () => {
+  let seen: { brain_id: string; audio: Uint8Array; unheard_text?: string | null } | undefined;
   const app = router({
     humanToBrain(request) {
       seen = request;
@@ -219,12 +219,14 @@ test("human-to-brain 解包 msgpack，把音频原样交给 brain，返回转录
   const res = await postMsgpack(app, "/human-to-brain", {
     brain_id: "员工3",
     audio: fakeOgg([1, 2, 3]),
+    unheard_text: "刚才那句没听完",
   });
 
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type")?.split(";")[0], "application/msgpack");
   assert.deepEqual(await reply(res), { kind: "text", text: "今天天气不错" });
   assert.equal(seen?.brain_id, "员工3");
+  assert.equal(seen?.unheard_text, "刚才那句没听完");
   assert.ok(seen !== undefined && Buffer.from(seen.audio).includes("OpusHead"));
 });
 

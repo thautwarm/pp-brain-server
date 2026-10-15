@@ -80,6 +80,59 @@ function brainOf(brainId: string): Brain {
     return brain;
 }
 
+/** agent 那条队列（`outbounds.agent`）的帽子。满了 `SizedQueueOps.push` 会把**最老的一条挤掉**。 */
+const AGENT_QUEUE_MAX = 64;
+
+/**
+ * 往 agent 队列塞一条，并把结果记一笔。
+ *
+ * 这条队列是**读即消费**的（`brainToAgent` 一 shift 就走了），又没有 ack 和重投，所以"消息丢了"
+ * 只有两个来源，日志得能分开看：
+ *
+ *   1. 撞上 64 的帽子被挤掉           → `DROPPED-OLDEST`，连被挤掉的那条一起打
+ *   2. 取走之后响应没送达客户端       → 出队那一刻 `signal.aborted` 已经为真，打 `ABORTED`
+ *
+ * 对账就简单了：**push 的条数 = 出队条数 + 队里剩的条数**，对不上就是撞了上面某一条。
+ */
+function pushToAgent(brain: Brain, brainId: string, text: string, source: "asr" | "warning"): void {
+    const before = brain.outbounds.agent.length;
+    const oldest = before >= AGENT_QUEUE_MAX ? brain.outbounds.agent[0] : undefined;
+
+    SizedQueueOps.push(brain.outbounds.agent, { text }, AGENT_QUEUE_MAX);
+
+    const queue = `q=${before}→${brain.outbounds.agent.length}`;
+    if (oldest === undefined) {
+        console.log(`[agent] +1 ${brainId} ${source} ${queue} ${brief(text)}`);
+        return;
+    }
+    console.warn(`[agent] +1 ${brainId} ${source} ${queue} DROPPED-OLDEST ${brief(oldest.text)} <- ${brief(text)}`);
+}
+
+/**
+ * 出队并记账。
+ *
+ * **shift 的那一刻客户端可能已经断了**（长轮询期间断开是常事），那条就再也回不来了——
+ * 这是服务端唯一看得见的"取走了却没送到"，所以单独标出来。
+ */
+function takeFromAgent(brain: Brain, brainId: string, signal: AbortSignal): { text: string } | undefined {
+    const before = brain.outbounds.agent.length;
+    const item = brain.outbounds.agent.shift();
+    if (item === undefined) return undefined;
+
+    const queue = `q=${before}→${brain.outbounds.agent.length}`;
+    if (signal.aborted) {
+        console.warn(`[agent] -1 ${brainId} ${queue} ABORTED(客户端已断开，这条丢了) ${brief(item.text)}`);
+        return item;
+    }
+    console.log(`[agent] -1 ${brainId} ${queue} ${brief(item.text)}`);
+    return item;
+}
+
+/** 日志里只留前 60 个字：转录可能很长，别把整段刷进日志。 */
+function brief(text: string): string {
+    return JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text);
+}
+
 
 
 const maxParallelTTS = 10;
@@ -99,7 +152,7 @@ export async function startBackgroundTask() {
 }
 
 async function backgroundTaskStep() {
-    for (const [_, brain] of brainsStore) {
+    for (const [brainId, brain] of brainsStore) {
         if (brain.dirty === 3) {
             brain.dirty = 'in-call';
             const job = async () => {
@@ -112,11 +165,7 @@ async function backgroundTaskStep() {
                         return;
                     }
 
-                    SizedQueueOps.push(
-                        brain.outbounds.agent,
-                        { text: warning },
-                        64,
-                    )
+                    pushToAgent(brain, brainId, warning, "warning")
                     if (evaluatedMaxTokens > 10240) {
                         await maybeCompression(brain, evaluatedMaxTokens, 10240)
                     }
@@ -173,10 +222,15 @@ export const Brains: BrainPorts = {
 
         brain.dirty = incDrity(brain.dirty)
 
-        SizedQueueOps.push(
-            brain.outbounds.agent,
-            { text: Format.asrToAgentReply(result.text) },
-            64,
+        // 人类打断时没听到的那段，插在给 agent 的文本前面。
+        // 可空（不给 / null / 空串都算没有），所以这里判的是"有没有实质内容"。
+        const heard = Format.asrToAgentReply(result.text)
+        const unheard = req.unheard_text ?? ""
+        pushToAgent(
+            brain,
+            req.brain_id,
+            unheard.trim() === "" ? heard : `${Format.unheardText(unheard)}\n${heard}`,
+            "asr",
         )
 
         return { kind: 'text', text: result.text }
@@ -223,7 +277,8 @@ export const Brains: BrainPorts = {
     async brainToAgent(req, { signal }) {
         const brain = brainOf(req.brain_id);
 
-        let agentText = brain.outbounds.agent.shift();
+        const brainId = req.brain_id;
+        let agentText = takeFromAgent(brain, brainId, signal);
         if (agentText !== undefined) {
             return { kind: 'text', text: agentText.text };
         }
@@ -234,7 +289,7 @@ export const Brains: BrainPorts = {
             }
             await new Promise(resolve => setTimeout(resolve, 50));
         }
-        agentText = brain.outbounds.agent.shift();
+        agentText = takeFromAgent(brain, brainId, signal);
         if (agentText === undefined) {
             return { kind: 'empty' }
         }

@@ -58,9 +58,12 @@ export interface BrainPorts {
    *
    * **只有转写该拖住这个 Promise。** 进 history、跑模型、合成都是后台的事：
    * 用户每说一句都要等到整轮生成完才拿到文本的话，这个接口就白设计了。
+   *
+   * `unheard_text` 是打断时补上来的那段——agent 已经说出来、人类没听到的话。**可空**，
+   * 没有就当它不存在。
    */
   humanToBrain(
-    request: { brain_id: string; audio: Uint8Array },
+    request: { brain_id: string; audio: Uint8Array; unheard_text?: string | null },
     options: { signal: AbortSignal },
   ): Promise<{ kind: "text"; text: string }>;
 
@@ -130,6 +133,13 @@ export class BrainNotFoundError extends Error {
 const humanToBrainBody = z.object({
   brain_id: z.string().min(1),
   audio: z.instanceof(Uint8Array).refine((bytes) => bytes.length > 0),
+  /**
+   * 人类打断时"没听到的那段"（agent 已经说出来、但没播完的话）。
+   *
+   * **可空**：不给、给 `null`、给空串，都算"这次没有"；给了就插到给 agent 的文本前面
+   * （见 brain-center）。
+   */
+  unheard_text: z.string().nullish(),
 });
 const brainIdOnly = z.object({ brain_id: z.string().min(1) });
 const agentToBrainBody = z.object({ brain_id: z.string().min(1), text: z.string().min(1) });
