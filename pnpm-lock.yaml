@@ -20,9 +20,6 @@ importers:
 
   apps/brains:
     dependencies:
-      '@ai-sdk/openai-compatible':
-        specifier: ^3.0.68
-        version: 3.0.68(zod@4.6.7)
       '@hono/node-server':
         specifier: ^2.1.5
         version: 2.1.5(hono@4.13.13)
@@ -44,6 +41,9 @@ importers:
       hono:
         specifier: ^4.13.13
         version: 4.13.13
+      smol-toml:
+        specifier: ^1.9.1
+        version: 1.9.1
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -75,9 +75,6 @@ importers:
 
   packages/chat:
     dependencies:
-      '@ai-sdk/deepseek':
-        specifier: ^3.0.63
-        version: 3.0.63(zod@4.6.6)
       '@ai-sdk/openai-compatible':
         specifier: ^3.0.67
         version: 3.0.67(zod@4.6.6)
@@ -96,12 +93,6 @@ importers:
 
 packages:
 
-  '@ai-sdk/deepseek@3.0.63':
-    resolution: {integrity: sha512-oSIwe9tIpRXkANMsdNcW7JnJRLp+dakWiudl8ZImffhw3PD91i5zpN8x3V6jkXhknvEhRxyd6IIiCSCevVZHyw==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
   '@ai-sdk/gateway@4.0.81':
     resolution: {integrity: sha512-9TdKEg2l/qfaK7L4gC1FkrHNBrEXQjZSV3DvkRLCXkOSJTzojmarCn19ROWBbrlHqFVbW7OSOwQqz1n7ku9HQA==}
     engines: {node: '>=22'}
@@ -110,12 +101,6 @@ packages:
 
   '@ai-sdk/openai-compatible@3.0.67':
     resolution: {integrity: sha512-w1l+CRQoPgXGRuDMpD0hal7RWXYXzbr0uMzTF7L/zHusYRUfwQHphs/voY/H8yMWLc+8chu2UCfvfwUGSANubA==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  '@ai-sdk/openai-compatible@3.0.68':
-    resolution: {integrity: sha512-xnBmn8wJvlRX4BtB2nJTzSoYHHD7OpZwUigwH0oKDzg5HfYx+rNFqOKUMQDUuOClhMyDRMn29q/rzp0M41vgQw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -138,22 +123,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.59':
-    resolution: {integrity: sha512-eaXBTkguxBFzS+KvxGRsbdkX9A7+R1g/C4jWx9mup0oSs3Cx5Mb427/byGpD2XL8SnMYT9O8LmXBmrgo+N3TJw==}
-    engines: {node: '>=22'}
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
   '@ai-sdk/provider@4.0.14':
     resolution: {integrity: sha512-yukP2tbcQQErG5gLCMBGvpvb/rM3D3KlTKG6eKKOdNHLHqtNNDEeBxdYrY/JL+O76B2ig5dXY19H/f1HFSvRiQ==}
     engines: {node: '>=22'}
 
   '@ai-sdk/provider@4.0.26':
     resolution: {integrity: sha512-BZ443uBEq6HuMA+Z4b7Hpm65GpZSo7pWqnYqpf/7tAO3C48JbtvAhOE2JnODFj+jodsZzfRHkAyQb64xuD2tZQ==}
-    engines: {node: '>=22'}
-
-  '@ai-sdk/provider@4.0.27':
-    resolution: {integrity: sha512-TtWwm6SxFiPomlMIbTQa+yhJte+w4/oCsW+wJrJzMC3MqHpAY9e5dJF1Y4HxyKt3W2Csac0KiI76Ckio11TFYw==}
     engines: {node: '>=22'}
 
   '@audio/decode-aac@1.6.0':
@@ -446,6 +421,10 @@ packages:
   simple-yenc@1.0.4:
     resolution: {integrity: sha512-5gvxpSd79e9a3V4QDYUqnqxeD4HGlhCakVpb6gMnDD7lexJggSBJRBO5h52y/iJrdXRilX9UCuDaIJhSWm5OWw==}
 
+  smol-toml@1.9.1:
+    resolution: {integrity: sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ==}
+    engines: {node: '>= 18'}
+
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -466,12 +445,6 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/deepseek@3.0.63(zod@4.6.6)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.26
-      '@ai-sdk/provider-utils': 5.0.58(zod@4.6.6)
-      zod: 4.6.6
-
   '@ai-sdk/gateway@4.0.81(zod@4.6.6)':
     dependencies:
       '@ai-sdk/provider': 4.0.14
@@ -491,12 +464,6 @@ snapshots:
       '@ai-sdk/provider': 4.0.26
       '@ai-sdk/provider-utils': 5.0.58(zod@4.6.6)
       zod: 4.6.6
-
-  '@ai-sdk/openai-compatible@3.0.68(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.27
-      '@ai-sdk/provider-utils': 5.0.59(zod@4.6.7)
-      zod: 4.6.7
 
   '@ai-sdk/openai@4.0.66(zod@4.6.7)':
     dependencies:
@@ -531,24 +498,11 @@ snapshots:
       undici: 7.30.0
       zod: 4.6.6
 
-  '@ai-sdk/provider-utils@5.0.59(zod@4.6.7)':
-    dependencies:
-      '@ai-sdk/provider': 4.0.27
-      '@standard-schema/spec': 1.1.0
-      '@workflow/serde': 4.1.0
-      eventsource-parser: 3.1.1
-      undici: 7.30.0
-      zod: 4.6.7
-
   '@ai-sdk/provider@4.0.14':
     dependencies:
       json-schema: 0.4.0
 
   '@ai-sdk/provider@4.0.26':
-    dependencies:
-      json-schema: 0.4.0
-
-  '@ai-sdk/provider@4.0.27':
     dependencies:
       json-schema: 0.4.0
 
@@ -756,6 +710,8 @@ snapshots:
       '@wasm-audio-decoders/common': 9.0.7
 
   simple-yenc@1.0.4: {}
+
+  smol-toml@1.9.1: {}
 
   typescript@7.0.2:
     optionalDependencies:

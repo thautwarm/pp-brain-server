@@ -32,11 +32,12 @@
  * msgpack 出），客户端不用另配 Accept。形状见 docs/brain-api.md。
  *
  * 错误一律用 HTTP 状态码 + `text/plain` 表达——错误体绝不能长得像**那个端点**的成功响应，
- * 否则会被当成一条合法回复去解。
+ * 否则会被当成一条合法回复去解。**没有这个 brain 是 404**：名字是客户端手输的，写错是常事，
+ * 不该被当成"上游挂了"（502）。
  */
 import { timingSafeEqual } from "node:crypto";
 import { decode, encode } from "@msgpack/msgpack";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { z } from "zod";
 
 /** 两种 body 编码。错误一律 text/plain（见文件头）。 */
@@ -107,6 +108,22 @@ export interface RouterOptions {
   readonly pollTimeoutMs: number;
 }
 
+/**
+ * 端口用它表示"没有这个 brain"，路由据此回 404。
+ *
+ * 有这个类型才有得判：不然端口只能抛一个普通 Error，跟"上游 STT 挂了"长得一模一样，
+ * 路由只好统统回 502——一个拼错的 brain_id 会被报成网关故障，排查方向整个是错的。
+ */
+export class BrainNotFoundError extends Error {
+  override readonly name = "BrainNotFoundError";
+  readonly brainId: string;
+
+  constructor(brainId: string) {
+    super(`没有这个 brain：${brainId}`);
+    this.brainId = brainId;
+  }
+}
+
 // 请求体的形状。zod 只认解出来的对象，不管它来自 msgpack 还是 JSON——
 // 两个 schema 在两种编码下都成立，只有音频字段是个 Uint8Array（msgpack 的 bin）。
 
@@ -136,9 +153,7 @@ export function createBrainRouter(options: RouterOptions): Hono {
     try {
       return msgpack(await options.ports.humanToBrain(parsed.data, { signal: c.req.raw.signal }));
     } catch (cause) {
-      console.error("[brains] human-to-brain 失败", cause);
-      // 上游（STT）挂了是"网关那边的问题"，不是这个请求写错了。
-      return c.text("转写失败", 502);
+      return fault(c, cause, "转写失败", 502);
     }
   });
 
@@ -153,8 +168,7 @@ export function createBrainRouter(options: RouterOptions): Hono {
       // 端口在中止时自己回 `{ kind: "empty" }`；undefined 只是它没守约定（抛了）时的兜底。
       return msgpack(reply ?? { kind: "empty" });
     } catch (cause) {
-      console.error("[brains] brain-to-human 失败", cause);
-      return c.text("取回复失败", 500);
+      return fault(c, cause, "取回复失败", 500);
     }
   });
 
@@ -172,8 +186,7 @@ export function createBrainRouter(options: RouterOptions): Hono {
         await options.ports.agentToBrain(parsed.data, { signal: c.req.raw.signal }),
       );
     } catch (cause) {
-      console.error("[brains] agent-to-brain 失败", cause);
-      return c.text("处理失败", 500);
+      return fault(c, cause, "处理失败", 500);
     }
   });
 
@@ -187,12 +200,24 @@ export function createBrainRouter(options: RouterOptions): Hono {
       );
       return writeBody(c.req.raw, reply ?? { kind: "empty" });
     } catch (cause) {
-      console.error("[brains] brain-to-agent 失败", cause);
-      return c.text("取文本失败", 500);
+      return fault(c, cause, "取文本失败", 500);
     }
   });
 
   return app;
+}
+
+/**
+ * 端口抛错时的统一出口。
+ *
+ * **没有这个 brain 是 404**——名字是客户端手输的，写错是常事，报成 502 会把排查方向整个带偏。
+ * 其余的按各端点自己的语义回（上游挂了 / 处理失败）。cause 只打服务端日志，不回给客户端。
+ */
+function fault(c: Context, cause: unknown, message: string, status: 500 | 502): Response {
+  if (cause instanceof BrainNotFoundError) return c.text(cause.message, 404);
+
+  console.error(`[brains] ${message}`, cause);
+  return c.text(message, status);
 }
 
 /** 成功响应：MessagePack 编一个对象出去。 */

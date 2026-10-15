@@ -1,0 +1,14 @@
+# 别把本机的依赖和私货拷进镜像。COPY . . 会照这份挡。
+node_modules
+.git
+.gitignore
+tmp
+docs
+*.md
+
+# 密钥走运行时（compose 的 env_file / docker run -e），不烘进镜像。
+.env
+.env.*
+
+# 构建缓存
+*.log

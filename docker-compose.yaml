@@ -1,0 +1,19 @@
+#   docker compose up --build
+#
+# STT / TTS 在局域网里（地址见 .env），桥接网络直接就能到，不需要 host 模式。
+services:
+  brains:
+    build:
+      context: .
+      dockerfile: Dockerfile.brains
+    image: might-brains
+    # 密钥和端点都从这里进容器，不烘进镜像。
+    env_file:
+      - .env
+    ports:
+      - "18781:8787"
+    volumes:
+      # brain 名单挂进来：改完 config.toml 重启一下就行，不用重建镜像。
+      # 注意是单文件挂载——宿主机上没有这个文件时 Docker 会建出一个同名**目录**。
+      - ./config.toml:/app/config.toml:ro
+    restart: unless-stopped

@@ -1,0 +1,34 @@
+# brains：一个 Node 进程，零构建（Node 24 直接跑 .ts，没有 dist/）。
+#
+#   docker build -f Dockerfile.brains -t might-brains .
+#
+# 通常不用直接 build，走 docker-compose.yaml。
+
+FROM node:24-alpine
+
+# 不装 ffmpeg。下行的 Ogg Opus 由 TTS 服务直接给：实测 MOSS-TTS 认 response_format=opus，
+# 回的就是 audio/ogg，stt-tts.ts 拿到 Ogg 就原样返回——转码那条路不会被走到，wasm runner
+# 也不会被走到。上行更不用转（客户端本来就是 Ogg Opus）。
+#
+# 万一哪天对面不认了，会落到 wasm runner 兜底的 build 路（要 Docker 运行时），在容器里必然
+# 失败——但那个报错是明确的（"两条路都没成"），比常年装着一个用不上的 ffmpeg 好。
+# 真要修，正路是让 wasm runner 认 WAV（handoff §3 第一条），不是往镜像里加 ffmpeg。
+
+# pnpm 版本跟 package.json 的 packageManager 对齐。用 npm 装而不是 corepack——
+# corepack 在 Node 各版本里的去留一直在变，显式装不会哪天突然没了。
+RUN npm install -g pnpm@11.18.0
+
+WORKDIR /app
+
+# 先只 COPY 清单：依赖层能缓存住，之后改代码不会重装依赖（这一层是最慢的）。
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
+COPY packages/audio/package.json packages/audio/
+COPY packages/chat/package.json packages/chat/
+COPY apps/brains/package.json apps/brains/
+RUN pnpm install --frozen-lockfile
+
+# 源码是直接跑的，没有构建产物，整包拷进来就行（.dockerignore 挡掉了 node_modules/.git/.env）。
+COPY . .
+
+EXPOSE 8787
+CMD ["node", "apps/brains/src/main.ts"]

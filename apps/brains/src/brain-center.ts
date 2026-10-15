@@ -1,9 +1,10 @@
-import type { BrainPorts } from "./http.ts";
+import { type BrainPorts, BrainNotFoundError } from "./http.ts";
 import { AudioHelper } from '@might/audio';
 import type { ApplicationMessage } from '@might/chat';
 import { callTranscript, callVoiceGen } from "./stt-tts.ts";
 import { Format, SizedQueueOps } from "./format.ts";
 import { reviseText, maybeCompression } from './revise.ts'
+import type { BrainConfig } from "./config.ts";
 
 type HistoryItem =
     | { kind: "human-audio", audioB64: string }
@@ -51,6 +52,33 @@ export interface Brain {
 
 
 const brainsStore = new Map<string, Brain>();
+
+/**
+ * 把 config.toml 里列的 brain 装进 store。**启动时调一次**。
+ *
+ * 装完之后 map 里就是全部可用的名字——配置是唯一入口，没有"请求里冒出来一个新名字就现建"这条
+ * 路。所以一个拼错的 brain_id 只会得到 404，不会凭空造出一个空 brain 把错记在服务端。
+ *
+ * 每个 brain 的状态是进程内存里的（`history` 里还抱着历史音频的 base64），所以重启即清零。
+ */
+export function registerBrains(entries: readonly BrainConfig[]): void {
+    for (const { id, voice } of entries) {
+        brainsStore.set(id, {
+            voice,
+            history: [],
+            dirty: 0,
+            inbounds: { agent: [] },
+            outbounds: { agent: [], human: [] },
+        });
+    }
+}
+
+/** 取一个 brain；名字不在配置里就是 BrainNotFoundError（路由回 404）。 */
+function brainOf(brainId: string): Brain {
+    const brain = brainsStore.get(brainId);
+    if (brain === undefined) throw new BrainNotFoundError(brainId);
+    return brain;
+}
 
 
 
@@ -128,11 +156,7 @@ async function backgroundTaskStep() {
 export const Brains: BrainPorts = {
 
     async humanToBrain(req, { signal }) {
-        const brainId = req.brain_id;
-        const brain = brainsStore.get(brainId);
-        if (!brain) {
-            throw new Error(`Brain with ID ${brainId} not found`);
-        }
+        const brain = brainOf(req.brain_id);
         const result = await callTranscript(req.audio, { signal: AbortSignal.any([signal, AbortSignal.timeout(13000)]) });
 
         SizedQueueOps.push(
@@ -160,10 +184,7 @@ export const Brains: BrainPorts = {
 
     async brainToHuman(req, { signal }) {
         // query interval: 50ms, once inbounds.agent is not empty, reply
-        const brain = brainsStore.get(req.brain_id);
-        if (!brain) {
-            throw new Error(`Brain with ID ${req.brain_id} not found`);
-        }
+        const brain = brainOf(req.brain_id);
         let agentReply = brain.outbounds.human.shift();
         if (agentReply !== undefined) {
             return { kind: 'text', text: agentReply.text, audio: agentReply.audio };
@@ -183,12 +204,8 @@ export const Brains: BrainPorts = {
         return { kind: 'text', text: agentReply.text, audio: agentReply.audio };
     },
 
-    async agentToBrain(req, { signal }) {
-        const brainId = req.brain_id;
-        const brain = brainsStore.get(brainId);
-        if (!brain) {
-            throw new Error(`Brain with ID ${brainId} not found`);
-        }
+    async agentToBrain(req) {
+        const brain = brainOf(req.brain_id);
         SizedQueueOps.push(
             brain.history,
             { kind: 'agent-text', text: req.text },
@@ -204,11 +221,7 @@ export const Brains: BrainPorts = {
     },
 
     async brainToAgent(req, { signal }) {
-        const brainId = req.brain_id;
-        const brain = brainsStore.get(brainId);
-        if (!brain) {
-            throw new Error(`Brain with ID ${brainId} not found`);
-        }
+        const brain = brainOf(req.brain_id);
 
         let agentText = brain.outbounds.agent.shift();
         if (agentText !== undefined) {

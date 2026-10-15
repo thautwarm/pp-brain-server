@@ -66,6 +66,8 @@ function toChatContext(brain: Brain) {
 
 
 const mkModel = () => deepseek.prepare({
+    // 端点（baseURL + key）和模型名都是部署的事。默认挑 flash：这是后台校对，不值得用 pro。
+    model: process.env.MIGHT_CHAT_MODEL ?? "mimo-v2.6-flash",
     args: { level: 'high' },
     credential: { auth: { apiKey: process.env.MIGHT_CHAT_API_KEY ?? "" }, baseURL: process.env.MIGHT_CHAT_API_BASE_URL ?? "" },
 })
