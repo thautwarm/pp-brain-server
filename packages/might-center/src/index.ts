@@ -1,2 +1,0 @@
-// @might/might-center
-export {};

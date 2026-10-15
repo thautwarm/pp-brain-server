@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { MockSpeechModelV4, MockTranscriptionModelV4 } from "ai/test";
 
 import type { AudioErrorCode } from "./index.ts";
-import { AudioAgent, AudioError } from "./index.ts";
+import { AudioAgent, AudioError, AudioHelper } from "./index.ts";
 
 // SDK 自己也会把 warnings 打到 stderr；这里关掉，我们只断言它们进了返回值。
 Object.assign(globalThis, { AI_SDK_LOG_WARNINGS: false });
@@ -38,6 +38,8 @@ async function failsWith(
 test("公开面：AudioAgent 的两个操作都在", () => {
   assert.equal(typeof AudioAgent.synthesize, "function");
   assert.equal(typeof AudioAgent.transcribe, "function");
+  assert.equal(typeof AudioAgent.sttModel, "function");
+  assert.equal(typeof AudioAgent.ttsModel, "function");
 });
 
 test("合成：音频、模型标识、providerMetadata 都拿出来", async () => {
@@ -262,4 +264,75 @@ test("取消：调用中抛 AbortError → aborted，不是 speech-failed", asyn
 
   const error = await failsWith(AudioAgent.synthesize({ model, text: "你好" }), "aborted");
   assert.equal(error.cause, aborted);
+});
+
+// 造模型：从 baseURL / apiKey / 模型名拼出 OpenAI 兼容的 stt / tts
+
+/** 从 fetch 的第一个参数里取出 URL——它可能是 string、URL 或 Request。 */
+function urlOf(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+test("造模型：baseURL / apiKey / 模型名都落到转写请求上", async () => {
+  let url = "";
+  let auth: string | null = null;
+  let form: FormData | undefined;
+  const model = AudioAgent.sttModel({
+    baseURL: "http://127.0.0.1:8082/v1",
+    apiKey: "sk-test",
+    model: "whisper-1",
+    fetch: async (input, init) => {
+      url = urlOf(input);
+      auth = new Headers(init?.headers).get("authorization");
+      form = init?.body instanceof FormData ? init.body : undefined;
+      return new Response(JSON.stringify({ text: "你好世界" }), {
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+
+  const transcript = await AudioAgent.transcribe({ model, audio: OGG });
+
+  assert.equal(url, "http://127.0.0.1:8082/v1/audio/transcriptions");
+  assert.equal(auth, "Bearer sk-test");
+  assert.equal(form?.get("model"), "whisper-1");
+  assert.equal(transcript.text, "你好世界");
+});
+
+test("造模型：baseURL / apiKey / 模型名都落到合成请求上", async () => {
+  let url = "";
+  let auth: string | null = null;
+  let body: Record<string, unknown> = {};
+  const model = AudioAgent.ttsModel({
+    baseURL: "http://127.0.0.1:6677/v1",
+    apiKey: "sk-test",
+    model: "tts-1",
+    fetch: async (input, init) => {
+      url = urlOf(input);
+      auth = new Headers(init?.headers).get("authorization");
+      body = JSON.parse(String(init?.body));
+      return new Response(MP3, { headers: { "content-type": "audio/mpeg" } });
+    },
+  });
+
+  const speech = await AudioAgent.synthesize({ model, text: "你好", voice: "alloy" });
+
+  assert.equal(url, "http://127.0.0.1:6677/v1/audio/speech");
+  assert.equal(auth, "Bearer sk-test");
+  assert.equal(body.model, "tts-1");
+  assert.equal(body.input, "你好");
+  assert.equal(body.voice, "alloy");
+  assert.deepEqual(speech.audio.uint8Array, MP3);
+});
+
+// base64：要进 JSON / history 的那条路
+
+test("toBase64：不带前缀的 base64；包一层的对象也收", () => {
+  const bytes = new Uint8Array([0x66, 0x6f, 0x6f]); // "foo"
+
+  assert.equal(AudioHelper.toBase64(bytes), "Zm9v");
+  assert.equal(AudioHelper.toBase64({ uint8Array: bytes }), "Zm9v");
+  assert.equal(AudioHelper.toBase64(new Uint8Array()), "");
 });

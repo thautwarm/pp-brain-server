@@ -4,7 +4,9 @@
 
 - 一次调用、一个产物，没有流。
 - 失败归一成一种异常 `AudioError`，带稳定 code（清单见 `AudioErrorData`）；原始异常走 `cause`。
-- 模型实例、`providerOptions` 由调用方解析好，原样交给这一层。要 Ogg Opus 就写 `outputFormat: "opus"`。
+- 模型实例、`providerOptions` 由调用方解析好，原样交给这一层——除非端点就是 OpenAI 兼容的，
+  那种直接用 `AudioAgent.sttModel` / `AudioAgent.ttsModel` 拼（见下面「造模型」）。要 Ogg Opus
+  就写 `outputFormat: "opus"`。
 - 两个命名空间：`AudioAgent` 管模型，`AudioHelper` 管字节和文件。底下全是无状态函数，没有实例和配置。
 
 上游依赖锁 `ai@7.0.101`。
@@ -15,7 +17,7 @@
 import { AudioAgent, AudioHelper } from "@might/audio";
 
 const speech = await AudioAgent.synthesize({
-  model, // 模型从哪来由调用方决定，这一层不关心
+  model, // 模型从哪来由调用方决定——或者用下面「造模型」里的工厂
   text: "你好",
   voice: "alloy",
   outputFormat: "opus",
@@ -28,6 +30,34 @@ const transcript = await AudioAgent.transcribe({
 });
 transcript.text;
 ```
+
+## 造模型：OpenAI 兼容的端点
+
+音频端点（whisper / tts-1 那一套）几乎都是 OpenAI 协议的自建服务，所以有两个便利工厂：从
+`baseURL` + `apiKey` + 模型名拼出模型对象。`/audio/transcriptions`、`/audio/speech` 都按 OpenAI
+那套拼在 `baseURL` 底下，所以 `baseURL` 通常要带 `/v1`。
+
+```ts
+const stt = AudioAgent.sttModel({
+  baseURL: "http://192.0.2.113:8082/v1",
+  apiKey: "sk-…",
+  model: "whisper-1",
+});
+const tts = AudioAgent.ttsModel({
+  baseURL: "http://192.0.2.102:6677/v1",
+  apiKey: "sk-…",
+  model: "tts-1",
+});
+
+await AudioAgent.transcribe({ model: stt, audio });
+await AudioAgent.synthesize({ model: tts, text: "你好", outputFormat: "opus" });
+```
+
+底下是 `@ai-sdk/openai`——`@ai-sdk/openai-compatible` 只有 chat / completion / embedding / image，
+**没有 speech 和 transcription**；OpenAI 自己那套 provider 讲的就是这个协议，`baseURL` 指过去就是
+"OpenAI 兼容"。模型名不限于 OpenAI 自己的那些，对面认什么就写什么。
+
+端点不是 OpenAI 协议、或者要复用自己 provider 的，就照旧自己造好模型再传进来。
 
 ## 结果
 
@@ -103,6 +133,9 @@ const bytes = await AudioHelper.loadAudioFile("cache/abc.ogg");
 
 目录不存在会顺手建出来。只在 Node 里能用（`node:fs` 是动态加载的）。失败抛文件系统自己的错误，
 不包成 `AudioError`。
+
+`AudioHelper.toBase64(bytes)` 给的是**不带前缀**的 base64——它能进 JSON、进 history；要 data URL
+自己加 `data:audio/ogg;base64,`。`speech.audio` 那种对象也直接收。
 
 ## 不做什么
 

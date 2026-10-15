@@ -43,7 +43,7 @@ export const MIGHT_NAMESPACE = "MIGHT_FRAMEWORK";
 // 上游公开类型
 // 消费方只装本包也能拿到这些类型，不必自己再装 AI SDK。名字保持上游原名。
 
-export type MessagePart = UIMessagePart<UIDataTypes, UITools>
+export type MessagePart = UIMessagePart<UIDataTypes, UITools>;
 export type { ProviderOptions } from "@ai-sdk/provider-utils";
 export type {
   ActiveTools,
@@ -59,8 +59,8 @@ export type {
   ToolSet,
   UIDataTypes,
   UIMessage,
-  UIMessagePart,
   UIMessageChunk,
+  UIMessagePart,
   UITool,
   UITools,
 } from "ai";

@@ -27,6 +27,8 @@ import type {
 } from "../index.ts";
 import { AudioError } from "../index.ts";
 
+// 造模型（stt / tts）单独一个文件，跟上面"调模型"的两个操作分开。
+export { sttModel, ttsModel } from "./openai.ts";
 // 本地转码（含 http runner）全在 ffmpeg.ts 一个文件里，公开面要什么这里转出去什么。
 export { convertToOggOpus, inspectRunner } from "./transcode.ts";
 
@@ -50,6 +52,18 @@ export async function saveAudioFile(input: SaveableAudio, path: string): Promise
 export async function loadAudioFile(path: string): Promise<Uint8Array> {
   const { readFile } = await fs();
   return readFile(path);
+}
+
+/**
+ * 音频 → base64 字符串，**不带 `data:` 前缀**。
+ *
+ * 给要进 JSON 的地方用：字节塞不进 JSON，base64 是唯一的选择。要 data URL 自己加前缀——
+ * 这一层不猜容器类型（字节里是能嗅出 Ogg / mp3 的，但那件事该由一个知道自己在做什么的
+ * 调用点决定，不是这里顺手加一句）。
+ */
+export function toBase64(input: SaveableAudio): string {
+  const bytes = input instanceof Uint8Array ? input : input.uint8Array;
+  return Buffer.from(bytes).toString("base64");
 }
 
 /** 合成语音：文字进，音频出。 */

@@ -5,8 +5,12 @@
  * 就是一次性返回的，这一层不假装它们是流。实时字幕要的是实验性的 streamTranscribe，
  * 那是另一件事，这层不开。
  *
- * 跟 chat-core 一样，只认 model / 参数 / providerOptions，不掺上层的业务概念：模型从哪
- * 来、音频存哪、转写结果给谁，都是调用方的事。入口是命名空间，底下全是无状态函数。
+ * 跟 chat-core 一样，只认 model / 参数 / providerOptions，不掺上层的业务概念：音频存哪、
+ * 转写结果给谁，都是调用方的事。入口是命名空间，底下全是无状态函数。
+ *
+ * 唯一的例外是 sttModel / ttsModel：音频端点几乎都是 OpenAI 协议的自建服务，把
+ * baseURL + apiKey + 模型名拼成一个模型对象这种活，固定到没必要每个调用点各写一遍，所以给两个
+ * 便利工厂（见"造模型"一节）。它们只管拼，不多认任何东西。
  *
  * 公开面只放形状和类型，实现放在 implementation/ 目录，形状和这一层的命名空间对齐。
  */
@@ -197,14 +201,38 @@ export interface TranscriptionOptions {
   readonly headers?: Record<string, string>;
 }
 
+// 造模型
+
+/**
+ * 造 stt / tts 模型要的东西：一个 OpenAI 兼容的端点，加上模型名。
+ *
+ * 端点就是 OpenAI 那套形状——`/audio/transcriptions`、`/audio/speech` 挂在 baseURL 底下，
+ * 所以 baseURL 通常要带 `/v1`。apiKey 会变成 `Authorization: Bearer`；本地服务不校验的话，
+ * 给个非空字符串就行。模型名不限于 OpenAI 自己的那些，对面认什么就写什么。
+ */
+export interface ModelOptions {
+  /** 端点根地址，例如 `http://192.0.2.113:8082/v1`。 */
+  readonly baseURL: string;
+  /** 会被发成 `Authorization: Bearer <apiKey>`。 */
+  readonly apiKey: string;
+  /** 模型名，例如 `whisper-1` / `tts-1`。 */
+  readonly model: string;
+  readonly headers?: Record<string, string>;
+  /** 换掉 fetch：测试，或者要塞中间件。 */
+  readonly fetch?: typeof fetch;
+}
+
 // 入口
 
 /**
  * AudioAgent：这一层的全部入口，一个命名空间，不是一个能被创建的对象。
  *
- * 两个操作各对上游的一个函数，都返回 Promise：没有流，也就没有 ChatAgent 那种
- * `{ chunks, result, abort }` 的运行对象。取消走 abortSignal——传进来的 signal 已经
- * aborted 时，我们不发请求，直接以 `aborted` 失败。
+ * 一半是**调模型**：`synthesize` / `transcribe` 各对上游的一个函数，都返回 Promise——
+ * 没有流，也就没有 ChatAgent 那种 `{ chunks, result, abort }` 的运行对象。取消走
+ * abortSignal：传进来的 signal 已经 aborted 时，我们不发请求，直接以 `aborted` 失败。
+ *
+ * 另一半是**造模型**：`sttModel` / `ttsModel` 从一个 OpenAI 兼容的端点造出模型对象，
+ * 交给上面那两个用。
  */
 export const AudioAgent = {
   /** 合成语音：一段文字进，一段音频出。 */
@@ -215,6 +243,16 @@ export const AudioAgent = {
   /** 转写语音：一段音频进，一份文字出。 */
   transcribe(options: TranscriptionOptions): Promise<Transcript> {
     return implementation.transcribe(options);
+  },
+
+  /** 造一个转写（STT）模型。 */
+  sttModel(options: ModelOptions): TranscriptionModel {
+    return implementation.sttModel(options);
+  },
+
+  /** 造一个合成（TTS）模型。 */
+  ttsModel(options: ModelOptions): SpeechModel {
+    return implementation.ttsModel(options);
   },
 };
 
@@ -350,5 +388,16 @@ export const AudioHelper = {
    */
   async loadAudioFile(path: string): Promise<Uint8Array> {
     return implementation.loadAudioFile(path);
+  },
+
+  /**
+   * 音频 → base64 字符串，**不带 `data:` 前缀**。
+   *
+   * 给要进 JSON 的地方用（比如 history）：字节塞不进 JSON，base64 是唯一的选择。
+   * 要 data URL 自己加前缀，这一层不猜容器类型。`speech.audio` 那种包了一层的对象也直接收
+   * （跟 `saveAudioFile` 一样）。
+   */
+  toBase64(input: SaveableAudio): string {
+    return implementation.toBase64(input);
   },
 };
