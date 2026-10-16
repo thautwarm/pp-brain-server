@@ -18,16 +18,16 @@ test("config：一个 brain 一张表，键就是 brain_id", async () => {
   const file = await writeConfig(`
 # 注释和空行该被吃掉
 [example-a]
-voice = "voice-2"
+voice = "voice-a"
 
 # brain_id 是中文就得加引号：TOML 的裸键只认 A-Za-z0-9_-
 ["员工3"]
-voice = "voice-6"
+voice = "voice-b"
 `);
 
   assert.deepEqual(await loadBrainConfig(file), [
-    { id: "example-a", voice: "voice-2" },
-    { id: "员工3", voice: "voice-6" },
+    { id: "example-a", voice: "voice-a" },
+    { id: "员工3", voice: "voice-b" },
   ]);
 });
 
@@ -41,7 +41,7 @@ test("config：坏了要说清楚是哪个文件、哪一条", async () => {
   await assert.rejects(() => loadBrainConfig(broken), /不是合法的 TOML/);
 
   // 中文 brain_id 忘了加引号：TOML 的裸键只认 A-Za-z0-9_-，这条最容易踩
-  const bareChinese = await writeConfig('[员工3]\nvoice = "voice-6"\n');
+  const bareChinese = await writeConfig('[员工3]\nvoice = "voice-b"\n');
   await assert.rejects(() => loadBrainConfig(bareChinese), /不是合法的 TOML/);
 
   // 一个 brain 都没有 —— 没有它服务起来也是空转，所以启动时就该拦下

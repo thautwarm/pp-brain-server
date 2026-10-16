@@ -1,0 +1,18 @@
+# 可用的 brain。键就是客户端手输的 brain_id，值是它的音色。
+#
+# **这是模板，不是配置本身。** 本机那份这样生出来：
+#
+#     cp config.toml.example config.toml
+#
+# `config.toml` 不入库（见 .gitignore）：里面的 brain 名和音色是本机的事。
+# 容器也不烘进去（见 .dockerignore），靠 compose 挂载进来。
+#
+# 这张表**就是访问名单**：不在这里面的名字一律不认（404）。没有它一个 brain 都起不来。
+# 音色名看 TTS 服务认什么，不是 OpenAI 那套（alloy / nova / …）。
+#
+# ⚠ brain_id 是中文的话表名必须加引号 —— TOML 的裸键只认 A-Za-z0-9_-：
+#     对：["员工3"]      错：[员工3]
+#   规则是坏的，报错是 "illegal character in key"，不带行号，第一次很难看出来。
+
+[example]
+voice = "voice-a"

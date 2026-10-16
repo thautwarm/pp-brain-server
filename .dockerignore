@@ -10,5 +10,9 @@ docs
 .env
 .env.*
 
+# 本机配置（brain 名单/音色）同理：不烘进镜像，靠 compose 挂载进来。
+# 模板是 config.toml.example。
+config.toml
+
 # 构建缓存
 *.log

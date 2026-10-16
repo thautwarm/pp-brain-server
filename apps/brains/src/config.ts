@@ -3,8 +3,10 @@
  *
  * 形状就是一张表，键是 brain_id（客户端手输的那个名字）：
  *
- *   [example-a]
- *   voice = "voice-2"
+ *   ["员工3"]
+ *   voice = "voice-a"
+ *
+ * 本机那份叫 `config.toml`，不入库；模板见 `config.toml.example`。
  *
  * 这张表不只是"默认值"，它就是**访问名单**：不在这里面的 brain_id 一律不认（路由回 404）。
  * 所以别把它当可有可无的东西——没有它一个 brain 都起不来。
