@@ -140,7 +140,13 @@ export interface SpeechOptions {
   /** 语气/风格指导，只有 gpt-4o-mini-tts 一类模型支持。 */
   readonly instructions?: string;
   readonly speed?: number;
-  /** ISO 639-1（"zh" / "en"…）或 "auto"；provider 支持度不一。 */
+  /**
+   * ISO 639-1（"zh" / "en"…）或 "auto"；provider 支持度不一。
+   *
+   * 实测：`@ai-sdk/openai` 的 speech provider 按 OpenAI 的能力表把它**挡掉**
+   * （"language is not supported … was ignored"，另给一条 warning）。想真发出去得绕开 provider，
+   * 不是传进来就行 —— 传它只会得到一条 warning。
+   */
   readonly language?: string;
   readonly providerOptions?: ProviderOptions;
   readonly maxRetries?: number;

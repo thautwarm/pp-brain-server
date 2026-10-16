@@ -27,8 +27,8 @@ node --env-file=.env apps/brains/src/main.ts
 
 | 变量 | 用途 |
 | --- | --- |
-| `STT_API_KEY` / `STT_API_BASE_URL` | 转写端点（OpenAI 兼容，baseURL 底下拼 `/audio/transcriptions`） |
-| `TTS_API_KEY` / `TTS_API_BASE_URL` | 合成端点（同上，拼 `/audio/speech`） |
+| `STT_API_BASE_URL` / `STT_API_KEY` / `STT_MODEL` | 转写端点（OpenAI 兼容，baseURL 底下拼 `/audio/transcriptions`）；`STT_MODEL` 不给则用 `qwen-asr` |
+| `TTS_API_BASE_URL` / `TTS_API_KEY` / `TTS_MODEL` | 合成端点（同上，拼 `/audio/speech`）；`TTS_MODEL` 不给则用 `moss-tts` |
 | `MIGHT_CHAT_API_KEY` / `MIGHT_CHAT_API_BASE_URL` | 修订/摘要用的对话端点 |
 | `MIGHT_CHAT_MODEL` | 修订用的模型名 |
 | `MIGHT_BRAINS_TOKEN` | 路由鉴权；空 = 不启用 |
@@ -47,7 +47,7 @@ node --env-file=.env apps/brains/src/main.ts
 | [src/brain-center.ts](../apps/brains/src/brain-center.ts) | `BrainPorts` 的实现：队列、history、后台任务、队列日志 |
 | [src/revise.ts](../apps/brains/src/revise.ts) | 修订：让外部模型检查最近的转录，必要时给 agent 告警；顺带压缩 history |
 | [src/stt-tts.ts](../apps/brains/src/stt-tts.ts) | STT/TTS 的薄封装（模型工厂 + 重试 + Ogg 兜底） |
-| [src/format.ts](../apps/brains/src/format.ts) | 进 prompt 的标签、语音禁用标记、语种判据 |
+| [src/format.ts](../apps/brains/src/format.ts) | 进 prompt 的标签、语音禁用标记 |
 | [src/config.ts](../apps/brains/src/config.ts) | 读并校验配置表 |
 | [src/main.ts](../apps/brains/src/main.ts) | 接线：断言配置、注册 brain、起路由、起后台任务、SIGTERM |
 
@@ -85,7 +85,6 @@ node --env-file=.env apps/brains/src/main.ts
 ### 语音
 
 - 合成前先过 `Format.forTts`：`<!-- disable voice -->` 段不念（文本照旧保留）。
-- `Format.ttsLanguage`：全 ASCII 的文本按 `en` 合成，否则用服务端默认。
 - 请求 `outputFormat: "opus"`；回来的不是 Ogg 才本地转（**镜像里没有 ffmpeg**，理由见
   [Dockerfile.brains](../Dockerfile.brains) —— 实测 TTS 认 `response_format=opus`，正常不会走到那一步）。
 - **不控制采样率**：TTS 回什么就透传什么（`format === "ogg"` 时字节不动、不重采样）。所以"下行 24k"

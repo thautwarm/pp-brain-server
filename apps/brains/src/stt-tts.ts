@@ -1,8 +1,6 @@
 import type { SpeechModel, TranscriptionModel } from "@might/audio";
 import { AudioAgent, AudioHelper } from "@might/audio";
 
-import { Format } from "./format.ts";
-
 /**
  * STT / TTS：两个写死的 OpenAI 兼容端点。
  *
@@ -17,7 +15,8 @@ function sttModel(): TranscriptionModel {
   stt ??= AudioAgent.sttModel({
     apiKey: process.env.STT_API_KEY ?? "",
     baseURL: process.env.STT_API_BASE_URL ?? "",
-    model: "qwen-asr",
+    // 模型名走环境变量：换模型是部署的事，不该改代码重建镜像。
+    model: process.env.STT_MODEL ?? "qwen-asr",
   });
   return stt;
 }
@@ -26,7 +25,7 @@ function ttsModel(): SpeechModel {
   tts ??= AudioAgent.ttsModel({
     apiKey: process.env.TTS_API_KEY ?? "",
     baseURL: process.env.TTS_API_BASE_URL ?? "",
-    model: "moss-tts",
+    model: process.env.TTS_MODEL ?? "moss-tts",
   });
   return tts;
 }
@@ -64,8 +63,6 @@ export async function callVoiceGen(
     model: ttsModel(),
     text,
     voice,
-    // 全是 ASCII 就当英文念（见 Format.ttsLanguage）；否则不指定，走服务端默认。
-    language: Format.ttsLanguage(text),
     outputFormat: "opus",
     abortSignal: options.signal,
     maxRetries: 3,
