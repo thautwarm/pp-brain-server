@@ -188,7 +188,7 @@ function transcriptionFailure(cause: unknown, abortSignal: AbortSignal | undefin
   return new AudioError({ code: "transcription-failed" }, { cause });
 }
 
-/** 模型标识：给了字符串就用它，给了模型对象就取它的 modelId。跟 chat-core 同一套规矩。 */
+/** 模型标识：给了字符串就用它，给了模型对象就取它的 modelId。跟 @might/chat 同一套规矩。 */
 function modelIdOf(model: SpeechOptions["model"] | TranscriptionOptions["model"]): string {
   return typeof model === "string" ? model : model.modelId;
 }

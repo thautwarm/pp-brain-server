@@ -12,7 +12,8 @@ FROM node:24-alpine
 #
 # 万一哪天对面不认了，会落到 wasm runner 兜底的 build 路（要 Docker 运行时），在容器里必然
 # 失败——但那个报错是明确的（"两条路都没成"），比常年装着一个用不上的 ffmpeg 好。
-# 真要修，正路是让 wasm runner 认 WAV（handoff §3 第一条），不是往镜像里加 ffmpeg。
+# 真要修，正路是让 wasm runner 认 WAV（它本来就在解 Ogg Opus，补一个 RIFF 读取即可），
+# 不是往镜像里加 ffmpeg。
 
 # pnpm 版本跟 package.json 的 packageManager 对齐。用 npm 装而不是 corepack——
 # corepack 在 Node 各版本里的去留一直在变，显式装不会哪天突然没了。

@@ -29,7 +29,7 @@
  * 带音频的 body 必须 MessagePack：bin 和结构化字段装在同一个对象里，不用 multipart、
  * 不用 base64。纯文本的 body 两种都行——JSON 让不装 msgpack 库的客户端也能直接调，
  * msgpack 一如既往。**agent 那对的响应跟着请求的编码走**（JSON 进 JSON 出，msgpack 进
- * msgpack 出），客户端不用另配 Accept。形状见 docs/brain-api.md。
+ * msgpack 出），客户端不用另配 Accept。形状见 docs/brain-api-spec.md。
  *
  * 错误一律用 HTTP 状态码 + `text/plain` 表达——错误体绝不能长得像**那个端点**的成功响应，
  * 否则会被当成一条合法回复去解。**没有这个 brain 是 404**：名字是客户端手输的，写错是常事，

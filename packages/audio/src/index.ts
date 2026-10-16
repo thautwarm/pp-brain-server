@@ -5,7 +5,7 @@
  * 就是一次性返回的，这一层不假装它们是流。实时字幕要的是实验性的 streamTranscribe，
  * 那是另一件事，这层不开。
  *
- * 跟 chat-core 一样，只认 model / 参数 / providerOptions，不掺上层的业务概念：音频存哪、
+ * 跟 @might/chat 一样，只认 model / 参数 / providerOptions，不掺上层的业务概念：音频存哪、
  * 转写结果给谁，都是调用方的事。入口是命名空间，底下全是无状态函数。
  *
  * 唯一的例外是 sttModel / ttsModel：音频端点几乎都是 OpenAI 协议的自建服务，把

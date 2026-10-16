@@ -3,8 +3,6 @@ hint: vercel ai sdk 也不是很干净，但是 v1 可以保持 snapshot，它�
 ---
 # @might/chat/v1
 
-[English](./README.en.md) | 中文
-
 模型会话的**事实层**：应用侧的消息、工具调用，和一轮模型推进。
 
 - 会话事实只有一种：`UIMessage`。落库、传输、模块间契约都用它。
@@ -18,7 +16,7 @@ hint: vercel ai sdk 也不是很干净，但是 v1 可以保持 snapshot，它�
 ## 最小用法（服务端）
 
 ```ts
-import { ChatAgent } from "@might/chat-core";
+import { ChatAgent } from "@might/chat";
 
 const conversation = {
   messages: [
@@ -148,4 +146,5 @@ const back = await ChatAgent.codec.deserialize(wire); // 版本不符或结构�
 - 不做循环、不做调度：一轮一次调用，继续与否归应用。
 - 不执行工具、不审批、不管副作用。
 - 不存储、不加密、不定保留期限。
-- 不碰 base URL、凭据、模型选择：那是上层的事。
+- **`ChatAgent` 本身**不碰 base URL、凭据、模型选择 —— 那是上层的事。根入口另有一个 `deepseek`
+  命名空间专门干这个（凭据 → 模型）。

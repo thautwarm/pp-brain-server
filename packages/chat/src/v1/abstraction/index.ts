@@ -1,5 +1,5 @@
 /**
- * @might/chat-core 的公开面。
+ * @might/chat 的公开面。
  *
  * 会话事实只有一层：UIMessage（应用侧表示）。AI SDK 面向 provider 的 ModelMessage
  * 不作为会话存储或模块间的事实；它只在真正发请求那一刻被投影出来，用完即弃。

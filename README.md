@@ -3,13 +3,17 @@
 Agent 开发的 TypeScript monorepo。**Node 24 原生跑 TypeScript**，零构建、零 JS 产物。
 
 ```
-package.json          脚本 + packageManager 版本声明
-pnpm-workspace.yaml   工作区 glob（pnpm 不读 package.json 的 workspaces 字段）
-tsconfig.json         全仓库唯一一份，只服务 `tsc --noEmit`
-biome.jsonc           lint + format
-packages/chat-core/   @might/chat-core —— 模型会话的事实层（UIMessage / ChatAgent）
-packages/audio/       @might/audio —— 语音的事实层（合成 / 转写 / 转成 Ogg Opus）
-docs/                 调研文档
+package.json            脚本 + packageManager 版本声明
+pnpm-workspace.yaml     工作区 glob（pnpm 不读 package.json 的 workspaces 字段）
+tsconfig.json           全仓库唯一一份，只服务 `tsc --noEmit`
+biome.jsonc             lint + format
+Dockerfile.brains       brains 的镜像（零构建，Node 直接跑 .ts）
+docker-compose.yaml     起 brains（宿主端口 → 容器 8787）
+config.toml.example     brain 名单的模板；本机那份 config.toml 不入库
+packages/chat/          @might/chat —— 会话的事实层（UIMessage / ChatAgent）+ 凭据→模型的 adapter
+packages/audio/         @might/audio —— 语音的事实层（合成 / 转写 / 转成 Ogg Opus）
+apps/brains/            Brain API 的服务端
+docs/                   brain-api-spec.md（接口契约）、client-notes.md（手机端）、brains.md（服务端）
 ```
 
 `exports` 直接指向 `./src/index.ts`，Node 运行时自己剥掉类型。没有构建步骤，没有 `dist/`。
@@ -28,7 +32,7 @@ docs/                 调研文档
 
 **验证脚本叫 `verify` 不叫 `ci`** —— `pnpm ci` 是 pnpm 的内建命令（清空重装），会把同名脚本吃掉且不报错。详见 [DEVDOCS.md](DEVDOCS.md)。
 
-跑单个文件：`node packages/chat-core/src/index.ts` —— 没有编译等待。
+跑单个文件：`node packages/audio/src/index.ts` —— 没有编译等待。
 
 ## 改这个仓库之前
 
