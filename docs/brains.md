@@ -88,6 +88,8 @@ node --env-file=.env apps/brains/src/main.ts
 - `Format.ttsLanguage`：全 ASCII 的文本按 `en` 合成，否则用服务端默认。
 - 请求 `outputFormat: "opus"`；回来的不是 Ogg 才本地转（**镜像里没有 ffmpeg**，理由见
   [Dockerfile.brains](../Dockerfile.brains) —— 实测 TTS 认 `response_format=opus`，正常不会走到那一步）。
+- **不控制采样率**：TTS 回什么就透传什么（`format === "ogg"` 时字节不动、不重采样）。所以"下行 24k"
+  不是我们的承诺 —— 客户端按解码器实际输出处理（见 [client-notes.md](./client-notes.md)）。
 
 ### 日志
 

@@ -97,7 +97,7 @@
 
 ```ts
 { kind: "empty" }                                    // 无内容，客户端应立即重发
-| { kind: "text", text: string, audio: Uint8Array }  // audio = Ogg Opus 24 kHz 单声道
+| { kind: "text", text: string, audio: Uint8Array }  // audio = Ogg Opus 单声道（采样率见 §6）
 ```
 
 服务端行为：
@@ -231,10 +231,13 @@ agent 提交一段文本。该文本会被合成语音并经 §3.2 交付给人�
 | 方向 | 端点字段 | 编码 | 采样率 |
 | --- | --- | --- | --- |
 | 上行 | `/human-to-brain` 请求的 `audio` | Ogg Opus | 16 kHz |
-| 下行 | `/brain-to-human` 响应的 `audio` | Ogg Opus | 24 kHz |
+| 下行 | `/brain-to-human` 响应的 `audio` | Ogg Opus | **不保证**（见下） |
 
 - 音频在 MessagePack 中为 bin 类型，非 base64。
-- 下行音频的实际解码采样率取决于客户端解码器，不由容器内声明值决定（Opus 内部为 48 kHz）。客户端应读取解码器输出采样率并据此重采样，不得硬编码 24 kHz。
+- **服务端不保证、也不承诺下行的采样率。** 下行音频由 TTS 端点产出，服务端原样透传、不做重采样；
+  它只是"碰巧"通常是 24 kHz。客户端不得依赖这个值。
+- Opus 内部恒为 48 kHz；Ogg Opus 头里的采样率只是提示信息。客户端解码器（如 Android 的
+  `MediaCodec`）通常直接输出 48 kHz。**客户端必须读解码器实际输出的采样率再据此重采样，不得写死。**
 
 ---
 

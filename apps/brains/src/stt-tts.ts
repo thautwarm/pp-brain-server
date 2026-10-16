@@ -50,7 +50,10 @@ export async function callTranscript(
  *
  * `outputFormat: "opus"` 是请服务端回 Ogg，但产物格式是**按返回的字节嗅探**出来的：服务端
  * 无视这个参数时不会报错，只会静默给一段 mp3/wav。所以这里核一次，不是 Ogg 就本地转。
- * 转码默认 48kHz，规格要 24kHz，所以显式给。
+ *
+ * 兜底那句 `sampleRate: 24000` **别当成"我们交付 24k"**：它只对 ffmpeg / http 那两条转码路生效
+ * （wasm 那条的编码器用的是源 PCM 的采样率），而且我们并不依赖它 —— Opus 头里的采样率只是提示，
+ * 客户端必须按解码器实际输出处理。上行那条（Ogg 透传）更是连碰都不碰采样率。
  */
 export async function callVoiceGen(
   text: string,
