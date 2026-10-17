@@ -6,8 +6,8 @@
 ## 跑起来
 
 ```bash
-cp config.toml.example config.toml   # 这台机器认哪些 brain，键就是客户端手输的名字
-                                     # .env 自己写一份，内容见下面「配置」
+cp config.toml.example config.toml   # 这台机器认哪些 brain（键就是客户端手输的名字）
+cp .env.example .env                 # 端点、密钥、模型名；填完再起
 docker compose up -d --build
 docker compose logs -f brains
 ```
