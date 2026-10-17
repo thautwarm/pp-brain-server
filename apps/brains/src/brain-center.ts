@@ -1,83 +1,105 @@
-import { type BrainPorts, BrainNotFoundError } from "./http.ts";
-import { AudioHelper } from '@might/audio';
-import type { ApplicationMessage } from '@might/chat';
-import { callTranscript, callVoiceGen } from "./stt-tts.ts";
+import { AudioHelper } from "@might/audio";
+import type { ApplicationMessage } from "@might/chat";
 import { Format, SizedQueueOps } from "./format.ts";
-import { reviseText, maybeCompression } from './revise.ts'
-import type { BrainConfig } from "./config.ts";
+import type { BrainPorts } from "./http.ts";
+import { maybeCompression, reviseText } from "./revise.ts";
+import { callTranscript, callVoiceGen } from "./stt-tts.ts";
 
 type HistoryItem =
-    | { kind: "human-audio", audioB64: string }
-    | { kind: 'human-audio-transcript', text: string }
-    | { kind: 'agent-text', text: string }
-    | { kind: 'assistant-message', message: ApplicationMessage & { role: 'assistant' } }
-    | { kind: 'human-message', message: ApplicationMessage & { role: 'user' } }
+  | { kind: "human-audio"; audioB64: string }
+  | { kind: "human-audio-transcript"; text: string }
+  | { kind: "agent-text"; text: string }
+  | { kind: "assistant-message"; message: ApplicationMessage & { role: "assistant" } }
+  | { kind: "human-message"; message: ApplicationMessage & { role: "user" } };
 
-function incDrity(dirty: 0 | 1 | 2 | 3 | 'in-call'): 0 | 1 | 2 | 3 | 'in-call' {
-    switch (dirty) {
-        case 0:
-            return 1
-        case 1:
-            return 2
-        case 2:
-            return 3
-        case 3:
-            return 3
-        case 'in-call':
-            return 'in-call'
-    }
+function incDrity(dirty: 0 | 1 | 2 | 3 | "in-call"): 0 | 1 | 2 | 3 | "in-call" {
+  switch (dirty) {
+    case 0:
+      return 1;
+    case 1:
+      return 2;
+    case 2:
+      return 3;
+    case 3:
+      return 3;
+    case "in-call":
+      return "in-call";
+  }
 }
 
 export interface Brain {
-    voice: string
-    history: HistoryItem[]
-    // 避免 queue shift 时把 summary 去掉
-    historySummary?: string
+  history: HistoryItem[];
+  // 避免 queue shift 时把 summary 去掉
+  historySummary?: string;
 
-    dirty: 0 | 1 | 2 | 3 | 'in-call'
+  dirty: 0 | 1 | 2 | 3 | "in-call";
 
+  /** 最后一次交互的时刻。任意 brain_id 都能现建，所以必须有淘汰。 */
+  lastActiveAt: number;
 
-    inbounds: {
-        agent: { text: string }[]
-    }
+  inbounds: {
+    // 音色是 per-request 的：agent-to-brain 带的那个跟着这条消息走，入队时存进队列项；没带
+    // 就等合成时用全局 `TTS_VOICE`。brain 上不存音色。
+    agent: { text: string; voice?: string }[];
+  };
 
-    outbounds: {
-        agent: { text: string }[]
+  outbounds: {
+    agent: { text: string }[];
 
-        // agent 回复给人类的 text 和 audio
-        human: { text: string, audio: Uint8Array }[]
-    }
+    // agent 回复给人类的 text 和 audio
+    human: { text: string; audio: Uint8Array }[];
+  };
 }
 
+/** 多久没交互就从内存卸载。brain_id 是客户端随便给的，没有淘汰等于让内存无限涨。 */
+const BRAIN_IDLE_MS = 2 * 60 * 60 * 1000;
 
+/** 上次扫全表淘汰的时刻，避免每 35 ms 都遍历一遍。 */
+let lastSweepAt = 0;
 
 const brainsStore = new Map<string, Brain>();
 
 /**
- * 把 config.toml 里列的 brain 装进 store。**启动时调一次**。
+ * 卸载空闲超过 `BRAIN_IDLE_MS` 的 brain，返回被卸载的名字。
  *
- * 装完之后 map 里就是全部可用的名字——配置是唯一入口，没有"请求里冒出来一个新名字就现建"这条
- * 路。所以一个拼错的 brain_id 只会得到 404，不会凭空造出一个空 brain 把错记在服务端。
- *
- * 每个 brain 的状态是进程内存里的（`history` 里还抱着历史音频的 base64），所以重启即清零。
+ * 抽成可注入 `now` 的纯函数是为了能测边界（正好 2 小时 / 刚过期）；调用点见
+ * `backgroundTaskStep`。
  */
-export function registerBrains(entries: readonly BrainConfig[]): void {
-    for (const { id, voice } of entries) {
-        brainsStore.set(id, {
-            voice,
-            history: [],
-            dirty: 0,
-            inbounds: { agent: [] },
-            outbounds: { agent: [], human: [] },
-        });
-    }
+export function evictIdleBrains(now: number): string[] {
+  const evicted: string[] = [];
+  for (const [brainId, brain] of brainsStore) {
+    if (now - brain.lastActiveAt <= BRAIN_IDLE_MS) continue;
+    brainsStore.delete(brainId);
+    evicted.push(brainId);
+    console.log(`[brain] ${brief(brainId)} 空闲超过 2 小时，已卸载`);
+  }
+  return evicted;
 }
 
-/** 取一个 brain；名字不在配置里就是 BrainNotFoundError（路由回 404）。 */
+/**
+ * 取一个 brain，**没有就现建**。
+ *
+ * 这里不再有"白名单"：`brain_id` 由客户端手输，任何非空字符串都算一个新 brain。所以
+ * 拼错一个名字不会报错，而是开出一段新对话 —— 客户端的 `brain_id` 得自己稳定住。
+ *
+ * 状态全在进程内存里（`history` 还抱着历史音频的 base64），重启即清零；空闲超过
+ * `BRAIN_IDLE_MS` 会被后台循环卸载（见 `backgroundTaskStep`）。
+ */
 function brainOf(brainId: string): Brain {
-    const brain = brainsStore.get(brainId);
-    if (brain === undefined) throw new BrainNotFoundError(brainId);
-    return brain;
+  let brain = brainsStore.get(brainId);
+  if (brain === undefined) {
+    brain = {
+      history: [],
+      dirty: 0,
+      lastActiveAt: Date.now(),
+      inbounds: { agent: [] },
+      outbounds: { agent: [], human: [] },
+    };
+    brainsStore.set(brainId, brain);
+    console.log(`[brain] ${brief(brainId)} 第一次出现，已创建`);
+  }
+  brain.lastActiveAt = Date.now();
+  return brain;
 }
 
 /** agent 那条队列（`outbounds.agent`）的帽子。满了 `SizedQueueOps.push` 会把**最老的一条挤掉**。 */
@@ -95,17 +117,19 @@ const AGENT_QUEUE_MAX = 64;
  * 对账就简单了：**push 的条数 = 出队条数 + 队里剩的条数**，对不上就是撞了上面某一条。
  */
 function pushToAgent(brain: Brain, brainId: string, text: string, source: "asr" | "warning"): void {
-    const before = brain.outbounds.agent.length;
-    const oldest = before >= AGENT_QUEUE_MAX ? brain.outbounds.agent[0] : undefined;
+  const before = brain.outbounds.agent.length;
+  const oldest = before >= AGENT_QUEUE_MAX ? brain.outbounds.agent[0] : undefined;
 
-    SizedQueueOps.push(brain.outbounds.agent, { text }, AGENT_QUEUE_MAX);
+  SizedQueueOps.push(brain.outbounds.agent, { text }, AGENT_QUEUE_MAX);
 
-    const queue = `q=${before}→${brain.outbounds.agent.length}`;
-    if (oldest === undefined) {
-        console.log(`[agent] +1 ${brainId} ${source} ${queue} ${brief(text)}`);
-        return;
-    }
-    console.warn(`[agent] +1 ${brainId} ${source} ${queue} DROPPED-OLDEST ${brief(oldest.text)} <- ${brief(text)}`);
+  const queue = `q=${before}→${brain.outbounds.agent.length}`;
+  if (oldest === undefined) {
+    console.log(`[agent] +1 ${brief(brainId)} ${source} ${queue} ${brief(text)}`);
+    return;
+  }
+  console.warn(
+    `[agent] +1 ${brief(brainId)} ${source} ${queue} DROPPED-OLDEST ${brief(oldest.text)} <- ${brief(text)}`,
+  );
 }
 
 /**
@@ -114,196 +138,200 @@ function pushToAgent(brain: Brain, brainId: string, text: string, source: "asr" 
  * **shift 的那一刻客户端可能已经断了**（长轮询期间断开是常事），那条就再也回不来了——
  * 这是服务端唯一看得见的"取走了却没送到"，所以单独标出来。
  */
-function takeFromAgent(brain: Brain, brainId: string, signal: AbortSignal): { text: string } | undefined {
-    const before = brain.outbounds.agent.length;
-    const item = brain.outbounds.agent.shift();
-    if (item === undefined) return undefined;
+function takeFromAgent(
+  brain: Brain,
+  brainId: string,
+  signal: AbortSignal,
+): { text: string } | undefined {
+  const before = brain.outbounds.agent.length;
+  const item = brain.outbounds.agent.shift();
+  if (item === undefined) return undefined;
 
-    const queue = `q=${before}→${brain.outbounds.agent.length}`;
-    if (signal.aborted) {
-        console.warn(`[agent] -1 ${brainId} ${queue} ABORTED(客户端已断开，这条丢了) ${brief(item.text)}`);
-        return item;
-    }
-    console.log(`[agent] -1 ${brainId} ${queue} ${brief(item.text)}`);
+  const queue = `q=${before}→${brain.outbounds.agent.length}`;
+  if (signal.aborted) {
+    console.warn(
+      `[agent] -1 ${brief(brainId)} ${queue} ABORTED(客户端已断开，这条丢了) ${brief(item.text)}`,
+    );
     return item;
+  }
+  console.log(`[agent] -1 ${brief(brainId)} ${queue} ${brief(item.text)}`);
+  return item;
 }
 
 /** 日志里只留前 60 个字：转录可能很长，别把整段刷进日志。 */
 function brief(text: string): string {
-    return JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text);
+  return JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text);
 }
-
-
 
 const maxParallelTTS = 10;
 const backgroundTaskState = {
-    tts: 0,
-    started: false
-}
+  tts: 0,
+  started: false,
+};
 
 export async function startBackgroundTask() {
-    if (backgroundTaskState.started) return;
-    backgroundTaskState.started = true;
+  if (backgroundTaskState.started) return;
+  backgroundTaskState.started = true;
 
-    while (true) {
-        await backgroundTaskStep().catch(console.error);
-        await new Promise(resolve => setTimeout(resolve, 35));
-    }
+  while (true) {
+    await backgroundTaskStep().catch(console.error);
+    await new Promise((resolve) => setTimeout(resolve, 35));
+  }
 }
 
 async function backgroundTaskStep() {
-    for (const [brainId, brain] of brainsStore) {
-        if (brain.dirty === 3) {
-            brain.dirty = 'in-call';
-            const job = async () => {
-                try {
-                    const { warning, evaluatedMaxTokens } = await reviseText(brain);
-                    if (!warning) {
-                        if (evaluatedMaxTokens > 10240) {
-                            await maybeCompression(brain, evaluatedMaxTokens, 10240)
-                        }
-                        return;
-                    }
+  // 空闲淘汰：别每跳都全表扫（N 大了它自己就是稳定的 CPU 开销），10 秒一次够用。
+  if (Date.now() - lastSweepAt > 10_000) {
+    lastSweepAt = Date.now();
+    evictIdleBrains(lastSweepAt);
+  }
 
-                    pushToAgent(brain, brainId, warning, "warning")
-                    if (evaluatedMaxTokens > 10240) {
-                        await maybeCompression(brain, evaluatedMaxTokens, 10240)
-                    }
-                }
-                finally {
-                    
-                    brain.dirty = 0
-                }
+  for (const [brainId, brain] of brainsStore) {
+    if (brain.dirty === 3) {
+      brain.dirty = "in-call";
+      const job = async () => {
+        try {
+          const { warning, evaluatedMaxTokens } = await reviseText(brain);
+          if (!warning) {
+            if (evaluatedMaxTokens > 10240) {
+              await maybeCompression(brain, evaluatedMaxTokens, 10240);
             }
-            job().catch((e) => console.error(`[revise] ${brainId} 失败`, e));
+            return;
+          }
+
+          pushToAgent(brain, brainId, warning, "warning");
+          if (evaluatedMaxTokens > 10240) {
+            await maybeCompression(brain, evaluatedMaxTokens, 10240);
+          }
+        } finally {
+          brain.dirty = 0;
         }
-
-        for (const it of [...brain.inbounds.agent]) {
-            const inQueue = async (brain: Brain, it: Brain['inbounds']['agent'][number]) => {
-                if (backgroundTaskState.tts >= maxParallelTTS) return;
-                if (!brain.inbounds.agent.includes(it)) return;
-                try {
-                    backgroundTaskState.tts++;
-                    SizedQueueOps.removeByIdentity(brain.inbounds.agent, it)
-
-                    // 念的是 forTts 过的那份（`<!-- disable voice -->` 段不念），
-                    // 推给人类的 text 还是原文 —— "不念"不等于"不显示"。
-                    const spoken = Format.forTts(it.text)
-                    if (spoken.trim() === "") {
-                        console.warn(`[tts] ${brainId} 整段都被静音了，跳过合成 ${brief(it.text)}`)
-                        return
-                    }
-
-                    const ttsResult = await callVoiceGen(spoken, brain.voice, { signal: undefined })
-                    SizedQueueOps.push(brain.outbounds.human, { text: it.text, audio: ttsResult.audio }, 12)
-                }
-                catch (e) {
-                    // 失败要能查：光有 error 不知道是哪句话、哪个 brain 打挂的（上游那个 500 尤其）
-                    console.error(`[tts] ${brainId} 合成失败 ${brief(it.text)}`, e)
-                }
-                finally {
-                    SizedQueueOps.removeByIdentity(brain.inbounds.agent, it)
-                    backgroundTaskState.tts--;
-                    backgroundTaskState.tts = Math.max(0, backgroundTaskState.tts);
-                }
-            }
-            inQueue(brain, it);
-        }
+      };
+      job().catch((e) => console.error(`[revise] ${brief(brainId)} 失败`, e));
     }
+
+    for (const it of [...brain.inbounds.agent]) {
+      const inQueue = async (brain: Brain, it: Brain["inbounds"]["agent"][number]) => {
+        if (backgroundTaskState.tts >= maxParallelTTS) return;
+        if (!brain.inbounds.agent.includes(it)) return;
+        try {
+          backgroundTaskState.tts++;
+          SizedQueueOps.removeByIdentity(brain.inbounds.agent, it);
+
+          // 念的是 forTts 过的那份（`<!-- disable voice -->` 段不念），
+          // 推给人类的 text 还是原文 —— "不念"不等于"不显示"。
+          const spoken = Format.forTts(it.text);
+          if (spoken.trim() === "") {
+            console.warn(`[tts] ${brief(brainId)} 整段都被静音了，跳过合成 ${brief(it.text)}`);
+            return;
+          }
+
+          // 音色必须是一个真实的值：@ai-sdk/openai 的 speech 在 voice 为 undefined 时会
+          // 自作主张塞 "alloy"，那不是"不传"。所以拿不到就跳过，别让它偷偷发 alloy。
+          const voice = it.voice ?? process.env.TTS_VOICE;
+          if (voice === undefined || voice === "") {
+            console.warn(
+              `[tts] ${brief(brainId)} 没有音色可用（TTS_VOICE 没配、请求也没带），跳过合成 ${brief(it.text)}`,
+            );
+            return;
+          }
+
+          const ttsResult = await callVoiceGen(spoken, voice, { signal: undefined });
+          SizedQueueOps.push(brain.outbounds.human, { text: it.text, audio: ttsResult.audio }, 12);
+        } catch (e) {
+          // 失败要能查：光有 error 不知道是哪句话、哪个 brain 打挂的（上游那个 500 尤其）
+          console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(it.text)}`, e);
+        } finally {
+          SizedQueueOps.removeByIdentity(brain.inbounds.agent, it);
+          backgroundTaskState.tts--;
+          backgroundTaskState.tts = Math.max(0, backgroundTaskState.tts);
+        }
+      };
+      inQueue(brain, it);
+    }
+  }
 }
 
 export const Brains: BrainPorts = {
+  async humanToBrain(req, { signal }) {
+    const brain = brainOf(req.brain_id);
+    const result = await callTranscript(req.audio, {
+      signal: AbortSignal.any([signal, AbortSignal.timeout(13000)]),
+    });
+    SizedQueueOps.push(
+      brain.history,
+      { kind: "human-audio", audioB64: AudioHelper.toBase64(req.audio) },
+      64,
+    );
 
-    async humanToBrain(req, { signal }) {
-        const brain = brainOf(req.brain_id);
-        const result = await callTranscript(req.audio, { signal: AbortSignal.any([signal, AbortSignal.timeout(13000)]) });
+    SizedQueueOps.push(brain.history, { kind: "human-audio-transcript", text: result.text }, 64);
 
-        SizedQueueOps.push(
-            brain.history,
-            { kind: 'human-audio', audioB64: AudioHelper.toBase64(req.audio) },
-            64,
-        )
+    brain.dirty = incDrity(brain.dirty);
 
-        SizedQueueOps.push(
-            brain.history,
-            { kind: 'human-audio-transcript', text: result.text },
-            64,
-        )
+    // 人类打断时没听到的那段，插在给 agent 的文本前面。
+    // 可空（不给 / null / 空串都算没有），所以这里判的是"有没有实质内容"。
+    const heard = Format.asrToAgentReply(result.text);
+    const unheard = req.unheard_text ?? "";
+    pushToAgent(
+      brain,
+      req.brain_id,
+      unheard.trim() === "" ? heard : `${Format.unheardText(unheard)}\n${heard}`,
+      "asr",
+    );
 
-        brain.dirty = incDrity(brain.dirty)
+    return { kind: "text", text: result.text };
+  },
 
-        // 人类打断时没听到的那段，插在给 agent 的文本前面。
-        // 可空（不给 / null / 空串都算没有），所以这里判的是"有没有实质内容"。
-        const heard = Format.asrToAgentReply(result.text)
-        const unheard = req.unheard_text ?? ""
-        pushToAgent(
-            brain,
-            req.brain_id,
-            unheard.trim() === "" ? heard : `${Format.unheardText(unheard)}\n${heard}`,
-            "asr",
-        )
-
-        return { kind: 'text', text: result.text }
-    },
-
-    async brainToHuman(req, { signal }) {
-        // query interval: 50ms, once inbounds.agent is not empty, reply
-        const brain = brainOf(req.brain_id);
-        let agentReply = brain.outbounds.human.shift();
-        if (agentReply !== undefined) {
-            return { kind: 'text', text: agentReply.text, audio: agentReply.audio };
-        }
-
-        while (brain.outbounds.human.length === 0) {
-            if (signal.aborted) {
-                return { kind: 'empty' }
-            }
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        agentReply = brain.outbounds.human.shift();
-        if (agentReply === undefined) {
-            return { kind: 'empty' }
-        }
-
-        return { kind: 'text', text: agentReply.text, audio: agentReply.audio };
-    },
-
-    async agentToBrain(req) {
-        const brain = brainOf(req.brain_id);
-        SizedQueueOps.push(
-            brain.history,
-            { kind: 'agent-text', text: req.text },
-            64,
-        )
-        SizedQueueOps.push(
-            brain.inbounds.agent,
-            { text: req.text },
-            64,
-        )
-        brain.dirty = incDrity(brain.dirty)
-        return { kind: 'empty' };
-    },
-
-    async brainToAgent(req, { signal }) {
-        const brain = brainOf(req.brain_id);
-
-        const brainId = req.brain_id;
-        let agentText = takeFromAgent(brain, brainId, signal);
-        if (agentText !== undefined) {
-            return { kind: 'text', text: agentText.text };
-        }
-
-        while (brain.outbounds.agent.length === 0) {
-            if (signal.aborted) {
-                return { kind: 'empty' }
-            }
-            await new Promise(resolve => setTimeout(resolve, 50));
-        }
-        agentText = takeFromAgent(brain, brainId, signal);
-        if (agentText === undefined) {
-            return { kind: 'empty' }
-        }
-
-        return { kind: 'text', text: agentText.text };
+  async brainToHuman(req, { signal }) {
+    // query interval: 50ms, once inbounds.agent is not empty, reply
+    const brain = brainOf(req.brain_id);
+    let agentReply = brain.outbounds.human.shift();
+    if (agentReply !== undefined) {
+      return { kind: "text", text: agentReply.text, audio: agentReply.audio };
     }
-}
+
+    while (brain.outbounds.human.length === 0) {
+      if (signal.aborted) {
+        return { kind: "empty" };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    agentReply = brain.outbounds.human.shift();
+    if (agentReply === undefined) {
+      return { kind: "empty" };
+    }
+
+    return { kind: "text", text: agentReply.text, audio: agentReply.audio };
+  },
+
+  async agentToBrain(req) {
+    const brain = brainOf(req.brain_id);
+    SizedQueueOps.push(brain.history, { kind: "agent-text", text: req.text }, 64);
+    SizedQueueOps.push(brain.inbounds.agent, { text: req.text, voice: req.voice }, 64);
+    brain.dirty = incDrity(brain.dirty);
+    return { kind: "empty" };
+  },
+
+  async brainToAgent(req, { signal }) {
+    const brain = brainOf(req.brain_id);
+
+    const brainId = req.brain_id;
+    let agentText = takeFromAgent(brain, brainId, signal);
+    if (agentText !== undefined) {
+      return { kind: "text", text: agentText.text };
+    }
+
+    while (brain.outbounds.agent.length === 0) {
+      if (signal.aborted) {
+        return { kind: "empty" };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    agentText = takeFromAgent(brain, brainId, signal);
+    if (agentText === undefined) {
+      return { kind: "empty" };
+    }
+
+    return { kind: "text", text: agentText.text };
+  },
+};

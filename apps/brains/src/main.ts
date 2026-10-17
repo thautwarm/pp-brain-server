@@ -11,8 +11,7 @@ import process from "node:process";
 
 import { serve } from "@hono/node-server";
 
-import { Brains, registerBrains, startBackgroundTask } from "./brain-center.ts";
-import { loadBrainConfig } from "./config.ts";
+import { Brains, startBackgroundTask } from "./brain-center.ts";
 import { createBrainRouter } from "./http.ts";
 
 /** 配置不对就别起服务：半启动的 server 比压根不启动难查得多。 */
@@ -42,13 +41,12 @@ required("STT_API_BASE_URL");
 required("TTS_API_BASE_URL");
 required("MIGHT_CHAT_API_KEY");
 required("MIGHT_CHAT_API_BASE_URL");
+// 默认音色。必填是有原因的：@ai-sdk/openai 的 speech 在 voice 为 undefined 时会自己塞
+// "alloy"，而自建的 TTS 未必认这个名字 —— 宁可启动时就报出来。
+required("TTS_VOICE");
 
-// config.toml 是访问名单：里面的名字就是全部可用的 brain（见 config.ts）。
-const configPath = process.env.MIGHT_BRAINS_CONFIG ?? "config.toml";
-const configured = await loadBrainConfig(configPath).catch((cause: unknown) =>
-  die(cause instanceof Error ? cause.message : String(cause)),
-);
-registerBrains(configured);
+// 没有 brain 清单：`brain_id` 由客户端随便给，第一次出现时现建（空闲 2 小时自动卸载，见
+// brain-center）。所以启动时没什么可读的配置文件。
 
 const token = process.env.MIGHT_BRAINS_TOKEN ?? ""; // 空 = 不启用鉴权（规格 §0.2）
 const port = envInt("MIGHT_BRAINS_PORT", 8787);
@@ -76,7 +74,5 @@ process.on("SIGTERM", () => {
 
 serve({ fetch: app.fetch, port }, (info) => {
   const auth = token === "" ? "关" : "开";
-  console.log(
-    `brains 听着 ${info.port}（鉴权${auth}）：${configured.map((b) => b.id).join(" / ")}`,
-  );
+  console.log(`brains 听着 ${info.port}（鉴权${auth}）`);
 });

@@ -298,6 +298,41 @@ test("brain-to-human 缺 brain_id 是 400，请求体不是 msgpack 也是 400",
   );
 });
 
+test("brain_id 超过 64 字符是 400（客户端可控的键，别让它无限长）", async () => {
+  const res = await postJson(router(), "/brain-to-agent", { brain_id: "x".repeat(65) });
+  assert.equal(res.status, 400);
+});
+
+test("音色是 per-request：两个提交端点都往下传（新名/旧名都认，并 trim）", async () => {
+  const seen: { human?: string; agent?: string } = {};
+  const app = router({
+    humanToBrain(request) {
+      seen.human = request.voice;
+      return Promise.resolve({ kind: "text", text: "x" });
+    },
+    agentToBrain(request) {
+      seen.agent = request.voice;
+      return Promise.resolve({ kind: "empty" });
+    },
+  });
+
+  await postMsgpack(
+    app,
+    "/human-to-brain",
+    { brain_id: "员工3", audio: fakeOgg([1]) },
+    { "x-brain-voice": "voice-a" },
+  );
+  await postJson(
+    app,
+    "/agent-to-brain",
+    { brain_id: "员工3", text: "x" },
+    { "x-might-voice": "  voice-b  " },
+  );
+
+  assert.equal(seen.human, "voice-a");
+  assert.equal(seen.agent, "voice-b");
+});
+
 test("brain 抛了但其实是超时，也算 empty 而不是 5xx", async () => {
   const app = router({
     async brainToHuman(_request, { signal }) {

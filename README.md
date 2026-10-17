@@ -9,7 +9,6 @@ tsconfig.json           全仓库唯一一份，只服务 `tsc --noEmit`
 biome.jsonc             lint + format
 Dockerfile.brains       brains 的镜像（零构建，Node 直接跑 .ts）
 docker-compose.yaml     起 brains（宿主端口 → 容器 8787）
-config.toml.example     brain 名单的模板；本机那份 config.toml 不入库
 packages/chat/          @might/chat —— 会话的事实层（UIMessage / ChatAgent）+ 凭据→模型的 adapter
 packages/audio/         @might/audio —— 语音的事实层（合成 / 转写 / 转成 Ogg Opus）
 apps/brains/            Brain API 的服务端

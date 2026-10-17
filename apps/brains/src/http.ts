@@ -32,8 +32,8 @@
  * msgpack 出），客户端不用另配 Accept。形状见 docs/brain-api-spec.md。
  *
  * 错误一律用 HTTP 状态码 + `text/plain` 表达——错误体绝不能长得像**那个端点**的成功响应，
- * 否则会被当成一条合法回复去解。**没有这个 brain 是 404**：名字是客户端手输的，写错是常事，
- * 不该被当成"上游挂了"（502）。
+ * 否则会被当成一条合法回复去解。**`brain_id` 不再是白名单**：任何非空字符串都会现建一个
+ * brain，所以没有"没有这个 brain"这条失败路径。
  */
 import { timingSafeEqual } from "node:crypto";
 import { decode, encode } from "@msgpack/msgpack";
@@ -61,9 +61,12 @@ export interface BrainPorts {
    *
    * `unheard_text` 是打断时补上来的那段——agent 已经说出来、人类没听到的话。**可空**，
    * 没有就当它不存在。
+   *
+   * `voice` 来自 `x-brain-voice` 头（旧名 `x-might-voice`）。路由**原样递下来**，用不用
+   * 是 brain 的事：这个端点本身不合成语音，所以目前它不影响任何行为。
    */
   humanToBrain(
-    request: { brain_id: string; audio: Uint8Array; unheard_text?: string | null },
+    request: { brain_id: string; audio: Uint8Array; unheard_text?: string | null; voice?: string },
     options: { signal: AbortSignal },
   ): Promise<{ kind: "text"; text: string }>;
 
@@ -84,9 +87,12 @@ export interface BrainPorts {
    *
    * 不做长轮询——这是个写入，没有"等"的语义；等是出 brain 那两个端点的事。
    * 写入又没有可回报的产物，所以跟长轮询超时一样，ack 一个 `{ kind: "empty" }`。
+   *
+   * `voice` 来自 `x-brain-voice` 头（旧名 `x-might-voice`），**只作用于这一条消息**：音色是
+   * per-request 的，brain 上不存；不带就用部署级的 `TTS_VOICE`。
    */
   agentToBrain(
-    request: { brain_id: string; text: string },
+    request: { brain_id: string; text: string; voice?: string },
     options: { signal: AbortSignal },
   ): Promise<{ kind: "empty" }>;
 
@@ -111,27 +117,11 @@ export interface RouterOptions {
   readonly pollTimeoutMs: number;
 }
 
-/**
- * 端口用它表示"没有这个 brain"，路由据此回 404。
- *
- * 有这个类型才有得判：不然端口只能抛一个普通 Error，跟"上游 STT 挂了"长得一模一样，
- * 路由只好统统回 502——一个拼错的 brain_id 会被报成网关故障，排查方向整个是错的。
- */
-export class BrainNotFoundError extends Error {
-  override readonly name = "BrainNotFoundError";
-  readonly brainId: string;
-
-  constructor(brainId: string) {
-    super(`没有这个 brain：${brainId}`);
-    this.brainId = brainId;
-  }
-}
-
 // 请求体的形状。zod 只认解出来的对象，不管它来自 msgpack 还是 JSON——
 // 两个 schema 在两种编码下都成立，只有音频字段是个 Uint8Array（msgpack 的 bin）。
 
 const humanToBrainBody = z.object({
-  brain_id: z.string().min(1),
+  brain_id: z.string().min(1).max(64),
   audio: z.instanceof(Uint8Array).refine((bytes) => bytes.length > 0),
   /**
    * 人类打断时"没听到的那段"（agent 已经说出来、但没播完的话）。
@@ -141,8 +131,11 @@ const humanToBrainBody = z.object({
    */
   unheard_text: z.string().nullish(),
 });
-const brainIdOnly = z.object({ brain_id: z.string().min(1) });
-const agentToBrainBody = z.object({ brain_id: z.string().min(1), text: z.string().min(1) });
+const brainIdOnly = z.object({ brain_id: z.string().min(1).max(64) });
+const agentToBrainBody = z.object({
+  brain_id: z.string().min(1).max(64),
+  text: z.string().min(1),
+});
 
 export function createBrainRouter(options: RouterOptions): Hono {
   const app = new Hono();
@@ -161,7 +154,12 @@ export function createBrainRouter(options: RouterOptions): Hono {
     if (!parsed.success) return c.text("请求体要形如 { brain_id, audio }（MessagePack）", 400);
 
     try {
-      return msgpack(await options.ports.humanToBrain(parsed.data, { signal: c.req.raw.signal }));
+      return msgpack(
+        await options.ports.humanToBrain(
+          { ...parsed.data, ...voiceOf(c) },
+          { signal: c.req.raw.signal },
+        ),
+      );
     } catch (cause) {
       return fault(c, cause, "转写失败", 502);
     }
@@ -193,7 +191,10 @@ export function createBrainRouter(options: RouterOptions): Hono {
       // 客户端不用为这一条另写判据。
       return writeBody(
         c.req.raw,
-        await options.ports.agentToBrain(parsed.data, { signal: c.req.raw.signal }),
+        await options.ports.agentToBrain(
+          { ...parsed.data, ...voiceOf(c) },
+          { signal: c.req.raw.signal },
+        ),
       );
     } catch (cause) {
       return fault(c, cause, "处理失败", 500);
@@ -218,14 +219,11 @@ export function createBrainRouter(options: RouterOptions): Hono {
 }
 
 /**
- * 端口抛错时的统一出口。
+ * 端口抛错时的统一出口：记日志、回一句 `text/plain`。
  *
- * **没有这个 brain 是 404**——名字是客户端手输的，写错是常事，报成 502 会把排查方向整个带偏。
- * 其余的按各端点自己的语义回（上游挂了 / 处理失败）。cause 只打服务端日志，不回给客户端。
+ * `brain_id` 不再是白名单，所以没有"没有这个 brain"这条失败路径了 —— 任何名字都会现建一个。
  */
 function fault(c: Context, cause: unknown, message: string, status: 500 | 502): Response {
-  if (cause instanceof BrainNotFoundError) return c.text(cause.message, 404);
-
   console.error(`[brains] ${message}`, cause);
   return c.text(message, status);
 }
@@ -279,6 +277,20 @@ function mediaType(request: Request): string {
   const raw = request.headers.get("content-type") ?? "";
   const end = raw.indexOf(";");
   return (end === -1 ? raw : raw.slice(0, end)).trim();
+}
+
+/**
+ * 可选的音色头：这条请求要用什么音色。两个提交端点都往下递，只有 `/agent-to-brain` 上的
+ * 会影响合成——音色是 per-request 的，跟着那条消息进队列。
+ *
+ * 两个名字都认，`x-brain-voice` 优先（更具体），`x-might-voice` 是旧名。空串和缺省一样，算没带。
+ *
+ * 返回的是可以直接展开进请求对象的片段（没带就是空对象）——这样端口收到的 request 里
+ * 不会多出一个值为 `undefined` 的 `voice` 键。
+ */
+function voiceOf(c: Context): { voice?: string } {
+  const voice = (c.req.header("x-brain-voice") ?? c.req.header("x-might-voice"))?.trim();
+  return voice === undefined || voice === "" ? {} : { voice };
 }
 
 /**

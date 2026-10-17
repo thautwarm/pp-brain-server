@@ -12,9 +12,4 @@ services:
       - .env
     ports:
       - "18781:8787"
-    volumes:
-      # brain 名单挂进来：改完 config.toml 重启一下就行，不用重建镜像。
-      # config.toml **不在仓库里**（见 .gitignore），先 `cp config.toml.example config.toml` ——
-      # 否则 Docker 会把不存在的路径建成一个同名目录。
-      - ./config.toml:/app/config.toml:ro
     restart: unless-stopped

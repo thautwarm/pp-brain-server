@@ -20,8 +20,8 @@ lint + format biome                    biome.jsonc ×1
 ## 配置文件的账
 
 全仓库的配置文件分两类：**搭仓库的**（下表）和**部署用的**（`Dockerfile.brains`、`docker-compose.yaml`、
-`.dockerignore`、`config.toml.example` —— 只服务 `apps/brains` 那个容器，别的包碰不到）。
-`.env` 和 `config.toml` 是**本机**的，不入库。
+`.dockerignore` —— 只服务 `apps/brains` 那个容器，别的包碰不到）。
+`.env` 是**本机**的，不入库。
 
 每加一个之前，先问"它买到了什么"：
 
@@ -31,7 +31,7 @@ lint + format biome                    biome.jsonc ×1
 | `pnpm-workspace.yaml` | 工作区 glob。**pnpm 不读 `package.json` 的 `workspaces` 字段**，只能写这里 | 不能（选 npm 就没这个文件） |
 | `tsconfig.json` | 类型检查。**Node 只剥离类型，永远不检查类型**，没有它就等于放弃类型安全 | 不能 |
 | `biome.jsonc` | lint + format | 能，但 lint 抓到过真问题（`require-await` 那次） |
-| `.gitignore` | 挡住 `node_modules/`、`tmp/`、`.env`、`config.toml` | 不能 |
+| `.gitignore` | 挡住 `node_modules/`、`tmp/`、`.env` | 不能 |
 | `packages/*/package.json` | 包名 + `exports` | 不能，workspaces 的硬要求 |
 | `pnpm-lock.yaml` | 依赖锁定 | 不能 |
 

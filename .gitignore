@@ -15,6 +15,3 @@ tmp/
 .DS_Store
 
 # 没有 dist/ —— 这个仓库不产出任何 JS 文件
-
-# 本机配置：brain 名单和音色是这台机器的事，模板见 config.toml.example
-config.toml
