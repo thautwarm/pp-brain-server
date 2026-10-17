@@ -175,7 +175,7 @@ async function backgroundTaskStep() {
                     brain.dirty = 0
                 }
             }
-            job().catch((e) => console.error(e));
+            job().catch((e) => console.error(`[revise] ${brainId} 失败`, e));
         }
 
         for (const it of [...brain.inbounds.agent]) {
@@ -198,7 +198,8 @@ async function backgroundTaskStep() {
                     SizedQueueOps.push(brain.outbounds.human, { text: it.text, audio: ttsResult.audio }, 12)
                 }
                 catch (e) {
-                    console.error(e)
+                    // 失败要能查：光有 error 不知道是哪句话、哪个 brain 打挂的（上游那个 500 尤其）
+                    console.error(`[tts] ${brainId} 合成失败 ${brief(it.text)}`, e)
                 }
                 finally {
                     SizedQueueOps.removeByIdentity(brain.inbounds.agent, it)
