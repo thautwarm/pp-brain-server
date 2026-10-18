@@ -45,7 +45,8 @@ while (true) {
 - **第一帧没有音频**：`{ text, sentences, skipped }`。`text` 是整条原始回复（`<!-- disable voice -->`
   段也在里面），`sentences` 是服务器切好的句子表——文字可以立刻上屏。
 - **之后每帧** `{ text, audio, consumed_sentences }`：`text` 是这一块念的内容，`consumed_sentences`
-  是累计句数。被打断时用"总句数 − consumed_sentences"算还剩几句没听到，比按毫秒估准。
+  是累计句数。被打断时用"总句数 − consumed_sentences"算还剩几句没听到，比按毫秒估准。粒度是"一块"
+  （一块可能拆成多帧），所以这个值可能**少报**，最多差一块。
 - **每帧的 `audio` 自己解码**，把 PCM 追加到播放队列；不要把一个帧的字节拼到另一个后面当
   一个 Ogg 用。
 - 首帧通常会在一两秒内到（服务端把回复切成 ~32 权重的小块先合成），之后按 80 权重一块接一块；

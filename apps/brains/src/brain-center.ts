@@ -4,7 +4,8 @@ import { Format, SizedQueueOps } from "./format.ts";
 import type { BrainFrame, BrainPorts } from "./http.ts";
 import { maybeCompression, reviseText } from "./revise.ts";
 import { type Split, splitForTts } from "./split.ts";
-import { callTranscript, callVoiceGen } from "./stt-tts.ts";
+import { callTranscript } from "./stt-tts.ts";
+import { streamVoice } from "./tts-stream.ts";
 
 type HistoryItem =
   | { kind: "human-audio"; audioB64: string }
@@ -250,9 +251,31 @@ async function* speak(
   for (const chunk of split.chunks) {
     if (signal.aborted) return; // 客户端断了：剩下的不合成
 
-    let audio: Uint8Array;
     try {
-      ({ audio } = await callVoiceGen(chunk.text, voice, { signal }));
+      // 一块的音频可能分好几帧到。留一帧的提前量：收到下一帧（或流结束）才知道手里这帧
+      // 是不是这一块的最后一块——只有最后一块才把这一块的句数记进去。
+      let pending: { audio: Uint8Array; format: string } | undefined;
+      for await (const piece of streamVoice(chunk.text, voice, { signal })) {
+        if (signal.aborted) return;
+        if (pending !== undefined) {
+          yield {
+            kind: "text",
+            text: chunk.text,
+            audio: await asOgg(pending),
+            consumed_sentences: consumed,
+          };
+        }
+        pending = piece;
+      }
+      if (pending !== undefined) {
+        consumed += chunk.sentences;
+        yield {
+          kind: "text",
+          text: chunk.text,
+          audio: await asOgg(pending),
+          consumed_sentences: consumed,
+        };
+      }
     } catch (cause) {
       // 文本帧已经发出去了，放回会让客户端把文字看两遍；剩下的音频就断在这儿。
       // 客户端自己断开的（signal 已中止）不算失败，别刷日志。
@@ -262,10 +285,15 @@ async function* speak(
       yield { kind: "failed", consumed_sentences: consumed };
       return;
     }
-
-    consumed += chunk.sentences;
-    yield { kind: "text", text: chunk.text, audio, consumed_sentences: consumed };
   }
+}
+
+/** 协议要求下行是 Ogg Opus；daemon 给了别的格式就在本地转一次（每块都是自包含的）。 */
+async function asOgg(piece: { audio: Uint8Array; format: string }): Promise<Uint8Array> {
+  const [a, b, c, d] = piece.audio;
+  const isOgg = a === 0x4f && b === 0x67 && c === 0x67 && d === 0x53; // "OggS"
+  if (isOgg) return piece.audio;
+  return AudioHelper.convertToOggOpus(piece.audio, undefined, { sampleRate: 24_000 });
 }
 
 /** 日志里只留前 60 个字：转录可能很长，别把整段刷进日志。 */

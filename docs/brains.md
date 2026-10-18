@@ -33,8 +33,8 @@ node --env-file=.env apps/brains/src/main.ts
 | 变量 | 用途 |
 | --- | --- |
 | `STT_API_BASE_URL` / `STT_API_KEY` / `STT_MODEL` | 转写端点（OpenAI 兼容，baseURL 底下拼 `/audio/transcriptions`）；`STT_MODEL` 不给则用 `qwen-asr` |
-| `TTS_API_BASE_URL` / `TTS_API_KEY` / `TTS_MODEL` | 合成端点（同上，拼 `/audio/speech`）；`TTS_MODEL` 不给则用 `moss-tts` |
-| `TTS_VOICE` | **必填**。默认音色。必填是有原因的：语音 SDK 在 `voice` 为 `undefined` 时会自己塞 `"alloy"`，而自建 TTS 未必认 —— 宁可启动时报出来 |
+| `TTS_API_BASE_URL` / `TTS_API_KEY` | 合成端点，拼 `/audio/speech/stream`（流式 TTS，见下）；`TTS_MODEL` 不再使用，模型/音色由 daemon 决定 |
+| `TTS_VOICE` | **必填**。默认音色，名字得是 daemon 认的（`default` = 不用参考音色）。填错不会启动失败，但每次合成都是一条 `failed` 帧 |
 | `WTP_SPLIT_URL` | **必填**。分句服务（compose 里的 `wtpsplit`）地址，流式回复硬依赖 |
 | `MIGHT_CHAT_API_KEY` / `MIGHT_CHAT_API_BASE_URL` | 修订/摘要用的对话端点 |
 | `MIGHT_CHAT_MODEL` | 修订用的模型名 |
@@ -96,7 +96,8 @@ node --env-file=.env apps/brains/src/main.ts
 - 音色解析：队列项自带的（入队时快照）→ 否则 `process.env.TTS_VOICE`；两者都没有就**跳过合成并告警**
   （不能“不传”：语音 SDK 会自己塞 `alloy`）。
 - `/brain-to-human` 不排队等整段：`forTts` → `wtpsplit` 分句 → 按权重装箱（首块 32，之后 80；
-  ASCII 记 0.5）→ **逐块调 TTS、合成一块吐一帧**。客户端断开就停手，剩下的文本不合成。
+  ASCII 记 0.5）→ **逐块调流式 TTS**（`POST /audio/speech/stream`，`[u32 LE][msgpack]` 帧），
+  daemon 每吐出 2 秒音频就转成一帧发给客户端。客户端断开就停手，剩下的文本不合成。
 - 第一帧只有文本 + 句子表（没有音频）；之后每帧是"这一块的文本 + 音频 + 累计消费的句子数"。
 - `skip_before` 不丢消息：那些消息以 `skipped: true` 的文本帧回去，由客户端决定怎么处理。
 - 合成前先过 `Format.forTts`：`<!-- disable voice -->` 段不念（文本照旧保留）。
