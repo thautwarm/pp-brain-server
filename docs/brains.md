@@ -97,7 +97,8 @@ node --env-file=.env apps/brains/src/main.ts
   （不能“不传”：语音 SDK 会自己塞 `alloy`）。
 - `/brain-to-human` 不排队等整段：`forTts` → `wtpsplit` 分句 → 按权重装箱（首块 32，之后 80；
   ASCII 记 0.5）→ **逐块调 TTS、合成一块吐一帧**。客户端断开就停手，剩下的文本不合成。
-- 第一帧带**原始文本**（`forTts` 之前的那份，静音段也在），后续帧只有音频；整条静音就只发文本。
+- 第一帧只有文本 + 句子表（没有音频）；之后每帧是"这一块的文本 + 音频 + 累计消费的句子数"。
+- `skip_before` 不丢消息：那些消息以 `skipped: true` 的文本帧回去，由客户端决定怎么处理。
 - 合成前先过 `Format.forTts`：`<!-- disable voice -->` 段不念（文本照旧保留）。
 - 请求 `outputFormat: "opus"`；回来的不是 Ogg 才本地转（**镜像里没有 ffmpeg**，理由见
   [Dockerfile.brains](../Dockerfile.brains) —— 实测 TTS 认 `response_format=opus`，正常不会走到那一步）。
@@ -110,8 +111,8 @@ node --env-file=.env apps/brains/src/main.ts
 
 - `[agent] +1 <brain> <asr|warning> q=a→b "<前 60 字>"` —— 入队；撞上限时同一行带 `DROPPED-OLDEST`。
 - `[agent] -1 <brain> q=a→b "<前 60 字>"` —— 出队；客户端已断开时带 `ABORTED(…这条丢了)`。
-- `[agent] skip <brain> 丢掉 N 条早于 <ISO> 的消息` —— 客户端带了 `skip_before`。
-- `[tts] <brain> 整段都被静音了，只发文本 "…"` / `没有音色可用，只发文本 "…"` / `连续 3 次失败，丢掉 "…"`。
+- `[tts] <brain> 客户端 skip_before 跳过 "…"` —— 客户端带了 `skip_before`，这条只发文本不发音频。
+- `[tts] <brain> 整段都被静音了，只发文本 "…"` / `没有音色可用，只发文本 "…"` / `连续 3 次分句失败，丢掉 "…"`。
 - `[stream] 第一帧就失败了` / `流式回复中途失败` —— 分句或 TTS 挂了（已发出的帧照常送达）。
 - `[brain] <brain> 第一次出现，已创建` / `空闲超过 2 小时，已卸载`。
 

@@ -3,7 +3,7 @@ import type { ApplicationMessage } from "@might/chat";
 import { Format, SizedQueueOps } from "./format.ts";
 import type { BrainPorts } from "./http.ts";
 import { maybeCompression, reviseText } from "./revise.ts";
-import { splitForTts } from "./split.ts";
+import { type Split, splitForTts } from "./split.ts";
 import { callTranscript, callVoiceGen } from "./stt-tts.ts";
 
 type HistoryItem =
@@ -161,17 +161,22 @@ function takeFromAgent(
 /**
  * 准备要念的文本：先过 `forTts`（`<!-- disable voice -->` 段不念），再交给分句服务装箱。
  *
- * 返回空数组 = 整段都不该念（调用点自己决定是"跳过"还是"回 empty"）。
+ * 返回空 = 整段都不该念（调用点只发文本帧，不合成）。
  */
-async function chunkForTts(text: string, signal: AbortSignal): Promise<string[]> {
+async function chunkForTts(text: string, signal: AbortSignal): Promise<Split> {
   const spoken = Format.forTts(text);
-  if (spoken.trim() === "") return [];
+  if (spoken.trim() === "") return { sentences: [], chunks: [] };
   return splitForTts(spoken, signal);
 }
 
 type AgentItem = Brain["inbounds"]["agent"][number];
 
-/** 一条消息最多试几次（分句或第一块 TTS 连续失败就不再挡着后面的消息）。 */
+/** 流里的一帧（`http.ts` 会给它套上 `kind`）。 */
+type Frame =
+  | { text: string; sentences: string[]; skipped: boolean }
+  | { text: string; audio: Uint8Array; consumed_sentences: number };
+
+/** 一条消息最多试几次分句（连续失败就不再挡着后面的消息）。 */
 const MAX_ATTEMPTS = 3;
 
 /**
@@ -188,7 +193,9 @@ function requeue(brain: Brain, brainId: string, item: AgentItem, signal: AbortSi
 
   item.attempts = (item.attempts ?? 0) + 1;
   if (item.attempts >= MAX_ATTEMPTS) {
-    console.error(`[tts] ${brief(brainId)} 连续 ${item.attempts} 次失败，丢掉 ${brief(item.text)}`);
+    console.error(
+      `[tts] ${brief(brainId)} 连续 ${item.attempts} 次分句失败，丢掉 ${brief(item.text)}`,
+    );
     return;
   }
   brain.inbounds.agent.unshift(item);
@@ -197,69 +204,61 @@ function requeue(brain: Brain, brainId: string, item: AgentItem, signal: AbortSi
 /**
  * 把一条消息念成帧。
  *
- * 第一帧带**原始**文本（`forTts` 之前的那份）——念出来的可能只是其中一部分，但客户端要显示
- * 的是整条回复；之后每帧只有音频。
+ * 第一帧**不带音频**：整条原始文本 + wtpsplit 的句子表（客户端立刻上屏、拿到句子表）。
+ * `skipped` 是 true 时到此为止——客户端说这条已经跳过了，只要文本，不合成。
+ * 之后每块一帧：这一块的文本 + 音频 + 已消费的句子数。
  */
 async function* speak(
   brain: Brain,
   brainId: string,
   item: AgentItem,
   signal: AbortSignal,
-): AsyncGenerator<{ text?: string; audio?: Uint8Array }> {
-  let chunks: string[];
+  skipped: boolean,
+): AsyncGenerator<Frame> {
+  let split: Split;
   try {
-    chunks = await chunkForTts(item.text, signal);
+    split = await chunkForTts(item.text, signal);
   } catch (cause) {
     requeue(brain, brainId, item, signal);
     throw cause; // 一帧都没发出去：交给路由变成 502
   }
 
-  if (chunks.length === 0) {
-    // 整条都被静音了：不合成，但原始文本还是要给客户端（它得显示出来）。
+  // 第一帧：整条文本 + 句子表，没有音频。
+  yield { text: item.text, sentences: split.sentences, skipped };
+
+  if (skipped) {
+    console.log(`[tts] ${brief(brainId)} 客户端 skip_before 跳过 ${brief(item.text)}`);
+    return;
+  }
+
+  if (split.chunks.length === 0) {
+    // 整条都被静音了：只有文本帧，不合成。
     console.warn(`[tts] ${brief(brainId)} 整段都被静音了，只发文本 ${brief(item.text)}`);
-    yield { text: item.text };
     return;
   }
 
   const voice = item.voice ?? process.env.TTS_VOICE;
   if (voice === undefined || voice === "") {
     console.warn(`[tts] ${brief(brainId)} 没有音色可用，只发文本 ${brief(item.text)}`);
-    yield { text: item.text };
     return;
   }
 
-  for (const [index, chunk] of chunks.entries()) {
+  let consumed = 0;
+  for (const chunk of split.chunks) {
     if (signal.aborted) return; // 客户端断了：剩下的不合成
 
     let audio: Uint8Array;
     try {
-      ({ audio } = await callVoiceGen(chunk, voice, { signal }));
+      ({ audio } = await callVoiceGen(chunk.text, voice, { signal }));
     } catch (cause) {
-      // 第一块就失败：还没发出去任何东西，整条放回去下次再试。
-      if (index === 0) requeue(brain, brainId, item, signal);
-      throw cause;
+      // 文本帧已经发出去了，放回会让客户端把文字看两遍；剩下的音频就断在这儿。
+      console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(chunk.text)}`, cause);
+      return;
     }
 
-    yield index === 0 ? { text: item.text, audio } : { audio };
+    consumed += chunk.sentences;
+    yield { text: chunk.text, audio, consumed_sentences: consumed };
   }
-}
-
-/**
- * 丢掉入队早于 `before` 的 agent 消息（客户端说"这些我已经跳过了"）。
- *
- * `before` 是**客户端的钟**（UTC 毫秒）——客户端和服务端对过时，所以直接比。
- */
-function dropBefore(brain: Brain, brainId: string, before: number | undefined): void {
-  if (before === undefined) return;
-
-  const kept = brain.inbounds.agent.filter((item) => item.enqueuedAt >= before);
-  const dropped = brain.inbounds.agent.length - kept.length;
-  if (dropped === 0) return;
-
-  brain.inbounds.agent.splice(0, brain.inbounds.agent.length, ...kept);
-  console.log(
-    `[agent] skip ${brief(brainId)} 丢掉 ${dropped} 条早于 ${new Date(before).toISOString()} 的消息`,
-  );
 }
 
 /** 日志里只留前 60 个字：转录可能很长，别把整段刷进日志。 */
@@ -349,14 +348,16 @@ export const Brains: BrainPorts = {
     const brainId = req.brain_id;
     const deadline = Date.now() + waitMs;
 
-    dropBefore(brain, brainId, req.skip_before);
-
     while (!signal.aborted) {
       // **原子取走**：两个并发请求不能拿到同一条；失败再放回头部（见 `requeue`）。
       const next = brain.inbounds.agent.shift();
       if (next !== undefined) {
-        yield* speak(brain, brainId, next, signal);
-        return;
+        // 客户端说这条太旧了：只回文本帧并标 `skipped`，让它自己决定怎么处理。
+        // 不合成，也不静默丢掉——它可能正靠这段算"哪些我没听到"。
+        const skipped = req.skip_before !== undefined && next.enqueuedAt < req.skip_before;
+        yield* speak(brain, brainId, next, signal, skipped);
+        if (!skipped) return;
+        continue;
       }
 
       if (Date.now() >= deadline) return; // 等到超时：路由会发一个 empty 帧

@@ -292,11 +292,12 @@ test('brain-to-human 没话说时挂到超时，最后补一个 { kind: "empty" 
   assert.ok(elapsed >= 25, `应当阻塞到超时，实际只用了 ${elapsed}ms`);
 });
 
-test("brain-to-human 有回复时按帧返回文本 + 音频，音频原样带出", async () => {
+test("brain-to-human：第一帧文本 + 句子表，第二帧音频", async () => {
   const audio = fakeOgg([0xde, 0xad, 0xbe, 0xef]);
   const app = router({
     async *brainToHuman() {
-      yield { text: "你好呀", audio };
+      yield { text: "你好呀。再见。", sentences: ["你好呀。", "再见。"], skipped: false };
+      yield { text: "你好呀。再见。", audio, consumed_sentences: 2 };
     },
   });
 
@@ -304,10 +305,15 @@ test("brain-to-human 有回复时按帧返回文本 + 音频，音频原样带�
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type")?.split(";")[0], "application/msgpack");
 
-  const frames = (await readFrames(res)) as { kind: string; text: string; audio: Uint8Array }[];
+  const frames = (await readFrames(res)) as Record<string, unknown>[];
+  assert.equal(frames.length, 2);
   assert.equal(frames[0]?.kind, "text");
-  assert.equal(frames[0]?.text, "你好呀");
-  assert.ok(Buffer.from(frames[0]?.audio ?? []).equals(Buffer.from(audio)), "音频字节要原样还原");
+  assert.equal(frames[0]?.text, "你好呀。再见。");
+  assert.deepEqual(frames[0]?.sentences, ["你好呀。", "再见。"]);
+  assert.equal(frames[0]?.skipped, false);
+  assert.equal("audio" in (frames[0] ?? {}), false, "第一帧不该带音频");
+  assert.equal(frames[1]?.consumed_sentences, 2);
+  assert.ok(Buffer.from(frames[1]?.audio as Uint8Array).equals(Buffer.from(audio)));
 });
 
 test("brain-to-human 缺 brain_id 是 400，请求体不是 msgpack 也是 400", async () => {
@@ -358,14 +364,16 @@ test("音色是 per-request：两个提交端点都往下传（新名/旧名都�
 test("流中途抛了：已发的帧照常送达，然后干净结束（不是 5xx）", async () => {
   const app = router({
     async *brainToHuman() {
-      yield { text: "前半句。", audio: fakeOgg([1]) };
+      yield { text: "前半句。", sentences: ["前半句。"], skipped: false };
+      yield { text: "前半句。", audio: fakeOgg([1]), consumed_sentences: 1 };
       throw new Error("上游 TTS 挂了");
     },
   });
 
   const res = await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" });
   assert.equal(res.status, 200);
-  assert.equal((await readFrames(res)).length, 1);
+  // 文本帧 + 一块音频，之后才炸：已经发出去的不受影响。
+  assert.equal((await readFrames(res)).length, 2);
 });
 
 test("带音频的两个端点只走 MessagePack：JSON 请求也是 400", async () => {
@@ -501,7 +509,8 @@ test("真 server：四个端点都接得上", async () => {
       return Promise.resolve({ kind: "text", text: "人类文本" });
     },
     async *brainToHuman() {
-      yield { text: "ai文本", audio };
+      yield { text: "ai文本", sentences: ["ai文本"], skipped: false };
+      yield { text: "ai文本", audio, consumed_sentences: 1 };
     },
     agentToBrain() {
       return Promise.resolve({ kind: "empty" });
@@ -532,14 +541,14 @@ test("真 server：四个端点都接得上", async () => {
 
     const responded = await sendMsgpack("/brain-to-human", { brain_id: "员工3" });
     assert.equal(responded.status, 200);
-    const frames = (await readFrames(responded)) as {
-      kind: string;
-      text: string;
-      audio: Uint8Array;
-    }[];
+    const frames = (await readFrames(responded)) as Record<string, unknown>[];
     assert.equal(frames[0]?.kind, "text");
     assert.equal(frames[0]?.text, "ai文本");
-    assert.ok(Buffer.from(frames[0]?.audio ?? []).equals(Buffer.from(audio)), "音频字节要原样还原");
+    assert.deepEqual(frames[0]?.sentences, ["ai文本"]);
+    assert.ok(
+      Buffer.from(frames[1]?.audio as Uint8Array).equals(Buffer.from(audio)),
+      "音频字节要原样还原",
+    );
 
     // agent 那对各挑一种编码走真 socket，两种都验到。
     const acted = await sendJson("/agent-to-brain", { brain_id: "员工3", text: "开灯" });
@@ -554,11 +563,12 @@ test("真 server：四个端点都接得上", async () => {
   }
 });
 
-test("一条回复拆成多帧，每帧 [u32 长度][msgpack]", async () => {
+test("一条回复拆成多帧，每帧 [u32 长度][msgpack]，consumed_sentences 累加", async () => {
   const app = router({
     async *brainToHuman() {
-      yield { text: "第一句。", audio: fakeOgg([1]) };
-      yield { audio: fakeOgg([2, 3]) };
+      yield { text: "一。二。三。", sentences: ["一。", "二。", "三。"], skipped: false };
+      yield { text: "一。二。", audio: fakeOgg([1]), consumed_sentences: 2 };
+      yield { text: "三。", audio: fakeOgg([2, 3]), consumed_sentences: 3 };
     },
   });
 
@@ -566,13 +576,14 @@ test("一条回复拆成多帧，每帧 [u32 长度][msgpack]", async () => {
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type") ?? "", /application\/msgpack/);
 
-  const frames = (await readFrames(res)) as { kind: string; text?: string; audio?: Uint8Array }[];
-  assert.equal(frames.length, 2);
-  assert.equal(frames[0]?.kind, "text");
-  assert.equal(frames[0]?.text, "第一句。");
-  assert.deepEqual(new Uint8Array(frames[0]?.audio ?? []), fakeOgg([1]));
-  assert.equal("text" in (frames[1] ?? {}), false, "后续帧不该带 text");
-  assert.deepEqual(new Uint8Array(frames[1]?.audio ?? []), fakeOgg([2, 3]));
+  const frames = (await readFrames(res)) as Record<string, unknown>[];
+  assert.equal(frames.length, 3);
+  assert.equal(frames[0]?.text, "一。二。三。");
+  assert.equal(frames[1]?.text, "一。二。");
+  assert.equal(frames[1]?.consumed_sentences, 2);
+  assert.equal(frames[2]?.text, "三。");
+  assert.equal(frames[2]?.consumed_sentences, 3);
+  assert.deepEqual(new Uint8Array(frames[2]?.audio as Uint8Array), fakeOgg([2, 3]));
 });
 
 test("等到超时：只有一个 empty 帧", async () => {
@@ -604,23 +615,21 @@ test("skip_before：原样递给端口（UTC 毫秒）", async () => {
   assert.equal(seen, 1734567890123, "非法值应当是 400，不该递下去");
 });
 
-test("只有第一帧带 text（原始文本），后续帧只有音频", async () => {
+test("skipped=true 的文本帧：只有文本，没有音频", async () => {
   const app = router({
     async *brainToHuman() {
-      yield { text: "原始文本 <!-- disable voice -->（这段不念）", audio: fakeOgg([1]) };
-      yield { audio: fakeOgg([2]) };
+      yield { text: "旧消息，被跳过了。", sentences: ["旧消息，被跳过了。"], skipped: true };
     },
   });
 
   const frames = (await readFrames(
     await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" }),
-  )) as { kind: string; text?: string; audio?: Uint8Array }[];
+  )) as Record<string, unknown>[];
 
-  assert.equal(frames.length, 2);
-  assert.equal(frames[0]?.text, "原始文本 <!-- disable voice -->（这段不念）");
-  assert.ok(frames[0]?.audio);
-  assert.equal("text" in (frames[1] ?? {}), false, "后续帧不该带 text");
-  assert.ok(frames[1]?.audio);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0]?.skipped, true);
+  assert.equal(frames[0]?.text, "旧消息，被跳过了。");
+  assert.equal("audio" in (frames[0] ?? {}), false);
 });
 
 test("第一帧就失败：502，不是 200 + 空流", async () => {

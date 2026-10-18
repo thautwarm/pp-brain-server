@@ -51,7 +51,7 @@ agent 侧
 <table>
   <tr><th>端点</th><th>方向</th><th>语义</th><th>编码</th></tr>
   <tr><td><code>POST /human-to-brain</code></td><td>人类 → brain</td><td>提交语音，阻塞至转写完成，返回文本</td><td>仅 MessagePack</td></tr>
-  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，帧流响应：第一帧带原始文本，后续帧只有音频</td><td>仅 MessagePack</td></tr>
+  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，帧流响应：先来一帧文本 + 句子表，之后每帧一块音频</td><td>仅 MessagePack</td></tr>
   <tr><td><code>POST /agent-to-brain</code></td><td>agent → brain</td><td>提交文本，立即返回，由服务端合成语音</td><td>MessagePack / JSON</td></tr>
   <tr><td><code>POST /brain-to-agent</code></td><td>brain → agent</td><td>长轮询，取转写结果、打断补充、校对告警</td><td>MessagePack / JSON</td></tr>
 </table>

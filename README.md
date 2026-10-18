@@ -21,7 +21,7 @@
 | `POST /agent-to-brain` | agent → brain | 提交一段文本，立即返回，由服务端合成语音 |
 | `POST /brain-to-agent` | brain → agent | 长轮询，取 brain 下放给 agent 的文本 |
 
-`/brain-to-human` 只有一种形态：MessagePack 帧流（`[u32 大端长度][MessagePack]` 重复）。第一帧带整条回复的原始文本加第一块音频，后续帧只有音频；没有 `final` 字段，body 正常结束就是说完了。细节见 [docs/brain-api-spec.md](docs/brain-api-spec.md)。
+`/brain-to-human` 只有一种形态：MessagePack 帧流（`[u32 大端长度][MessagePack]` 重复）。第一帧是整条文本 + 句子表（没有音频），之后每帧一块音频，带累计消费的句数；没有 `final` 字段，body 正常结束就是说完了。细节见 [docs/brain-api-spec.md](docs/brain-api-spec.md)。
 
 ## 快速开始
 

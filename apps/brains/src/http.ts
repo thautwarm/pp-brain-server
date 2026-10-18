@@ -87,12 +87,23 @@ export interface BrainPorts {
      */
     request: { brain_id: string; skip_before?: number },
     options: { signal: AbortSignal; waitMs: number },
-  ): AsyncIterable<{
-    /** 只有第一帧带：这条回复的**原始**文本（含 `<!-- disable voice -->` 段，原样）。 */
-    text?: string;
-    /** 这一块的音频。整条都被静音时第一帧没有音频。 */
-    audio?: Uint8Array;
-  }>;
+  ): AsyncIterable<
+    | {
+        /** 这条回复的**原始**文本（含 `<!-- disable voice -->` 段，原样）。 */
+        text: string;
+        /** wtpsplit 切出来的句子表；它的 join 不一定等于 `text`。 */
+        sentences: string[];
+        /** 客户端说这条已经跳过了：只有这一帧，没有音频。 */
+        skipped: boolean;
+      }
+    | {
+        /** 这一块念的文本（客户端用它算"跳过/没听到"了什么）。 */
+        text: string;
+        audio: Uint8Array;
+        /** 包括这一块在内，已经消费了多少句（累加）。 */
+        consumed_sentences: number;
+      }
+  >;
 
   /**
    * `agent-to-brain`：agent 把一段文本交给 brain。
@@ -266,13 +277,17 @@ function json(value: unknown): Response {
  * **第一帧先取出来再回响应头**：这样"分句服务挂了 / 第一块 TTS 就失败"还能老老实实回 502，
  * 而不是 200 + 空 body（那会被客户端当成"说完了"）。开流之后出错就只能断流、记日志。
  */
+type FramePayload =
+  | { text: string; sentences: string[]; skipped: boolean }
+  | { text: string; audio: Uint8Array; consumed_sentences: number };
+
 async function frameResponse(
-  chunks: AsyncIterable<{ text?: string; audio?: Uint8Array }>,
+  chunks: AsyncIterable<FramePayload>,
   signal: AbortSignal,
 ): Promise<Response> {
   const iterator = chunks[Symbol.asyncIterator]();
 
-  let pending: IteratorResult<{ text?: string; audio?: Uint8Array }> | undefined;
+  let pending: IteratorResult<FramePayload> | undefined;
   try {
     pending = await iterator.next();
   } catch (cause) {
@@ -299,11 +314,7 @@ async function frameResponse(
           return;
         }
 
-        const payload: Record<string, unknown> = { kind: "text" };
-        if (next.value.text !== undefined) payload.text = next.value.text;
-        if (next.value.audio !== undefined) payload.audio = next.value.audio;
-
-        controller.enqueue(frame(payload));
+        controller.enqueue(frame({ kind: "text", ...next.value }));
         wrote = true;
       } catch (cause) {
         // 客户端自己断开是常态，不是错误。

@@ -72,14 +72,16 @@
 [u32 大端长度][MessagePack]   ← 一帧，重复 N 次
 
 // 每帧：
-{ kind: "text", text: string, audio: Uint8Array }  // 第一帧
-{ kind: "text", audio: Uint8Array }                // 后续帧
-{ kind: "empty" }                                  // 等到超时、没有内容</code></pre>
+{ kind: "text", text: string, sentences: string[], skipped: boolean }           // 每条消息的第一帧
+{ kind: "text", text: string, audio: Uint8Array, consumed_sentences: number }   // 音频帧
+{ kind: "empty" }                                                               // 等到超时、没有内容</code></pre>
 <ul>
-  <li><code>text</code> 只在第一帧出现，是这条回复的<strong>原始文本</strong>：<code>&lt;!-- disable voice --&gt;</code> 段照原样保留（那些段不合成语音，但文字仍是 agent 说的话）。</li>
-  <li>整条都被静音时只发一帧 <code>{ kind: "text", text }</code>，没有 <code>audio</code>。</li>
+  <li><strong>第一帧不带音频</strong>：<code>text</code> 是整条原始文本（<code>&lt;!-- disable voice --&gt;</code> 段照原样保留），<code>sentences</code> 是 wtpsplit 的句子表（它的 join 不一定等于 <code>text</code>）。客户端可以先上屏。</li>
+  <li><strong>之后每帧</strong>是"这一块念的文本 + 音频 + 累计消费的句子数"。被打断时用 <code>consumed_sentences</code> 算还剩几句没听到。</li>
+  <li><code>skipped: true</code>：客户端 <code>skip_before</code> 跳过的旧消息，只有文本帧，没有音频。</li>
+  <li>整条都被静音时只有第一帧，没有音频帧。</li>
   <li><code>audio</code> 是 Ogg Opus，<strong>每帧是一个独立的文件</strong>：按帧解码，把 PCM 追加到播放队列，不要字节拼接。</li>
-  <li><code>skip_before</code>（可选，UTC epoch <strong>毫秒</strong>，客户端的钟）：早于这个时刻入队的 agent 消息<strong>直接丢掉</strong>，不合成、不发送。客户端不耐烦、跳过积压的几条时带上它，从最新的开始说。</li>
+  <li><code>skip_before</code>（可选，UTC epoch <strong>毫秒</strong>，客户端的钟）：早于这个时刻入队的 agent 消息<strong>不合成、不丢弃</strong>，而是以 <code>skipped: true</code> 的文本帧回给客户端，由它决定显示、忽略还是记进 <code>unheard_text</code>。</li>
   <li>客户端断开，服务端立即停止后续合成；已经取走的这条消息不会重投。</li>
 </ul>
 <div class="note">
@@ -116,16 +118,16 @@
 <p><code>/brain-to-human</code> 的响应<strong>永远</strong>是一串帧，没有"单个 MessagePack"的形态：</p>
 <pre><code>while (true) {
   read 4 bytes -&gt; length (big-endian u32)
-  read length bytes -&gt; MessagePack -&gt; { kind, text, audio }
+  read length bytes -&gt; MessagePack
   if (kind == "empty") break        // 超时，没有内容，立刻重发
-  enqueue(audio)                    // 每帧是独立的 Ogg 文件，各自解码
+  if (frame.audio) enqueue(frame.audio)   // 每帧是独立的 Ogg 文件，各自解码
 }
 // body 正常结束 = 这一条说完了</code></pre>
 <ul>
   <li><strong>读法</strong>：不靠 MessagePack 自己定界——各语言的流式 unpacker 支持参差，而"读 4 字节、再读 N 字节"谁都会写。</li>
   <li><strong>截断</strong>：读不到完整的一帧（连接中断、长度越界）= 这条丢了。客户端重新发起请求即可，服务端不会重投。</li>
   <li><strong>超时语义</strong>：超时只约束<strong>等第一帧</strong>（默认 25 秒）。开始吐帧之后，这条连接可以一直挂到说完。一帧都没有就发一帧 <code>{ kind: "empty" }</code> 收尾。</li>
-  <li>首帧通常在一两秒内到（服务端把回复切成小块先合成），不需要等整条合成完就开始播。</li>
+  <li>首帧（只有文本和句子表）几乎立刻到；第一块音频通常在一两秒内跟上，不需要等整条合成完就开始播。</li>
 </ul>
 
 <h2><code>brain_id</code></h2>
