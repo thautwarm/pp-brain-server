@@ -53,6 +53,32 @@ const JSON_TYPE = "application/json";
  *
  * 收的是**请求体**、回的是**响应体**（长轮询的两种返回就是那两个 body）。
  */
+/**
+ * `/brain-to-human` 帧流里的一帧（不含 `empty`——那是路由在"一句话都没有"时补的）。
+ *
+ * - 第一帧：整条原始文本 + 句子表，**没有音频**；`skipped` 表示这条是被客户端跳过的回填。
+ * - 音频帧：这一块念的文本 + 音频 + 累计消费的句子数。
+ * - `failed`：合成中途挂了，这一条到此为止（客户端据此区别于"正常说完"）。
+ */
+export type BrainFrame =
+  | {
+      kind: "text";
+      /** 这条回复的**原始**文本（含 `<!-- disable voice -->` 段，原样）。 */
+      text: string;
+      /** wtpsplit 的句子表；跳过帧为空数组。它的 join 不一定等于 `text`。 */
+      sentences: string[];
+      skipped: boolean;
+    }
+  | {
+      kind: "text";
+      /** 这一块念的文本（客户端用它算"跳过/没听到"了什么）。 */
+      text: string;
+      audio: Uint8Array;
+      /** 包括这一块在内，已经消费了多少句（累加）。 */
+      consumed_sentences: number;
+    }
+  | { kind: "failed"; consumed_sentences: number };
+
 export interface BrainPorts {
   /**
    * `human-to-brain`：一段人类语音进，转录文本出——它就是响应体。
@@ -87,23 +113,7 @@ export interface BrainPorts {
      */
     request: { brain_id: string; skip_before?: number },
     options: { signal: AbortSignal; waitMs: number },
-  ): AsyncIterable<
-    | {
-        /** 这条回复的**原始**文本（含 `<!-- disable voice -->` 段，原样）。 */
-        text: string;
-        /** wtpsplit 切出来的句子表；它的 join 不一定等于 `text`。 */
-        sentences: string[];
-        /** 客户端说这条已经跳过了：只有这一帧，没有音频。 */
-        skipped: boolean;
-      }
-    | {
-        /** 这一块念的文本（客户端用它算"跳过/没听到"了什么）。 */
-        text: string;
-        audio: Uint8Array;
-        /** 包括这一块在内，已经消费了多少句（累加）。 */
-        consumed_sentences: number;
-      }
-  >;
+  ): AsyncIterable<BrainFrame>;
 
   /**
    * `agent-to-brain`：agent 把一段文本交给 brain。
@@ -277,17 +287,13 @@ function json(value: unknown): Response {
  * **第一帧先取出来再回响应头**：这样"分句服务挂了 / 第一块 TTS 就失败"还能老老实实回 502，
  * 而不是 200 + 空 body（那会被客户端当成"说完了"）。开流之后出错就只能断流、记日志。
  */
-type FramePayload =
-  | { text: string; sentences: string[]; skipped: boolean }
-  | { text: string; audio: Uint8Array; consumed_sentences: number };
-
 async function frameResponse(
-  chunks: AsyncIterable<FramePayload>,
+  chunks: AsyncIterable<BrainFrame>,
   signal: AbortSignal,
 ): Promise<Response> {
   const iterator = chunks[Symbol.asyncIterator]();
 
-  let pending: IteratorResult<FramePayload> | undefined;
+  let pending: IteratorResult<BrainFrame> | undefined;
   try {
     pending = await iterator.next();
   } catch (cause) {
@@ -314,7 +320,7 @@ async function frameResponse(
           return;
         }
 
-        controller.enqueue(frame({ kind: "text", ...next.value }));
+        controller.enqueue(frame(next.value));
         wrote = true;
       } catch (cause) {
         // 客户端自己断开是常态，不是错误。
@@ -329,7 +335,13 @@ async function frameResponse(
   });
 
   return new Response(stream, {
-    headers: { "content-type": MSGPACK, "cache-control": "no-store" },
+    // x-accel-buffering 是给 nginx 一类反代看的：不关掉它，分帧会被攒成一整块，
+    // 首帧延迟就白优化了。其他代理不认也无害。
+    headers: {
+      "content-type": MSGPACK,
+      "cache-control": "no-store",
+      "x-accel-buffering": "no",
+    },
   });
 }
 

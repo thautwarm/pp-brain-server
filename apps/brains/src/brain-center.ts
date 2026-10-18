@@ -1,7 +1,7 @@
 import { AudioHelper } from "@might/audio";
 import type { ApplicationMessage } from "@might/chat";
 import { Format, SizedQueueOps } from "./format.ts";
-import type { BrainPorts } from "./http.ts";
+import type { BrainFrame, BrainPorts } from "./http.ts";
 import { maybeCompression, reviseText } from "./revise.ts";
 import { type Split, splitForTts } from "./split.ts";
 import { callTranscript, callVoiceGen } from "./stt-tts.ts";
@@ -171,11 +171,6 @@ async function chunkForTts(text: string, signal: AbortSignal): Promise<Split> {
 
 type AgentItem = Brain["inbounds"]["agent"][number];
 
-/** 流里的一帧（`http.ts` 会给它套上 `kind`）。 */
-type Frame =
-  | { text: string; sentences: string[]; skipped: boolean }
-  | { text: string; audio: Uint8Array; consumed_sentences: number };
-
 /** 一条消息最多试几次分句（连续失败就不再挡着后面的消息）。 */
 const MAX_ATTEMPTS = 3;
 
@@ -214,7 +209,14 @@ async function* speak(
   item: AgentItem,
   signal: AbortSignal,
   skipped: boolean,
-): AsyncGenerator<Frame> {
+): AsyncGenerator<BrainFrame> {
+  // 被跳过的消息只要文本：不调分句服务，客户端本来也不用那些句子。
+  if (skipped) {
+    console.log(`[tts] ${brief(brainId)} 客户端 skip_before 跳过 ${brief(item.text)}`);
+    yield { kind: "text", text: item.text, sentences: [], skipped: true };
+    return;
+  }
+
   let split: Split;
   try {
     split = await chunkForTts(item.text, signal);
@@ -223,13 +225,14 @@ async function* speak(
     throw cause; // 一帧都没发出去：交给路由变成 502
   }
 
-  // 第一帧：整条文本 + 句子表，没有音频。
-  yield { text: item.text, sentences: split.sentences, skipped };
-
-  if (skipped) {
-    console.log(`[tts] ${brief(brainId)} 客户端 skip_before 跳过 ${brief(item.text)}`);
+  // 分句这段时间里客户端可能已经断了：那样这条还没送出去，放回去。
+  if (signal.aborted) {
+    requeue(brain, brainId, item, signal);
     return;
   }
+
+  // 第一帧：整条文本 + 句子表，没有音频。
+  yield { kind: "text", text: item.text, sentences: split.sentences, skipped: false };
 
   if (split.chunks.length === 0) {
     // 整条都被静音了：只有文本帧，不合成。
@@ -253,14 +256,15 @@ async function* speak(
     } catch (cause) {
       // 文本帧已经发出去了，放回会让客户端把文字看两遍；剩下的音频就断在这儿。
       // 客户端自己断开的（signal 已中止）不算失败，别刷日志。
-      if (!signal.aborted) {
-        console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(chunk.text)}`, cause);
-      }
+      if (signal.aborted) return;
+      console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(chunk.text)}`, cause);
+      // 明确告诉客户端"这条到这儿断了"，别让它把 200 + body 结束当成说完了。
+      yield { kind: "failed", consumed_sentences: consumed };
       return;
     }
 
     consumed += chunk.sentences;
-    yield { text: chunk.text, audio, consumed_sentences: consumed };
+    yield { kind: "text", text: chunk.text, audio, consumed_sentences: consumed };
   }
 }
 

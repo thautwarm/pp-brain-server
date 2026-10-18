@@ -296,8 +296,13 @@ test("brain-to-human：第一帧文本 + 句子表，第二帧音频", async () 
   const audio = fakeOgg([0xde, 0xad, 0xbe, 0xef]);
   const app = router({
     async *brainToHuman() {
-      yield { text: "你好呀。再见。", sentences: ["你好呀。", "再见。"], skipped: false };
-      yield { text: "你好呀。再见。", audio, consumed_sentences: 2 };
+      yield {
+        kind: "text",
+        text: "你好呀。再见。",
+        sentences: ["你好呀。", "再见。"],
+        skipped: false,
+      };
+      yield { kind: "text", text: "你好呀。再见。", audio, consumed_sentences: 2 };
     },
   });
 
@@ -364,8 +369,8 @@ test("音色是 per-request：两个提交端点都往下传（新名/旧名都�
 test("流中途抛了：已发的帧照常送达，然后干净结束（不是 5xx）", async () => {
   const app = router({
     async *brainToHuman() {
-      yield { text: "前半句。", sentences: ["前半句。"], skipped: false };
-      yield { text: "前半句。", audio: fakeOgg([1]), consumed_sentences: 1 };
+      yield { kind: "text", text: "前半句。", sentences: ["前半句。"], skipped: false };
+      yield { kind: "text", text: "前半句。", audio: fakeOgg([1]), consumed_sentences: 1 };
       throw new Error("上游 TTS 挂了");
     },
   });
@@ -509,8 +514,8 @@ test("真 server：四个端点都接得上", async () => {
       return Promise.resolve({ kind: "text", text: "人类文本" });
     },
     async *brainToHuman() {
-      yield { text: "ai文本", sentences: ["ai文本"], skipped: false };
-      yield { text: "ai文本", audio, consumed_sentences: 1 };
+      yield { kind: "text", text: "ai文本", sentences: ["ai文本"], skipped: false };
+      yield { kind: "text", text: "ai文本", audio, consumed_sentences: 1 };
     },
     agentToBrain() {
       return Promise.resolve({ kind: "empty" });
@@ -566,9 +571,14 @@ test("真 server：四个端点都接得上", async () => {
 test("一条回复拆成多帧，每帧 [u32 长度][msgpack]，consumed_sentences 累加", async () => {
   const app = router({
     async *brainToHuman() {
-      yield { text: "一。二。三。", sentences: ["一。", "二。", "三。"], skipped: false };
-      yield { text: "一。二。", audio: fakeOgg([1]), consumed_sentences: 2 };
-      yield { text: "三。", audio: fakeOgg([2, 3]), consumed_sentences: 3 };
+      yield {
+        kind: "text",
+        text: "一。二。三。",
+        sentences: ["一。", "二。", "三。"],
+        skipped: false,
+      };
+      yield { kind: "text", text: "一。二。", audio: fakeOgg([1]), consumed_sentences: 2 };
+      yield { kind: "text", text: "三。", audio: fakeOgg([2, 3]), consumed_sentences: 3 };
     },
   });
 
@@ -618,7 +628,12 @@ test("skip_before：原样递给端口（UTC 毫秒）", async () => {
 test("skipped=true 的文本帧：只有文本，没有音频", async () => {
   const app = router({
     async *brainToHuman() {
-      yield { text: "旧消息，被跳过了。", sentences: ["旧消息，被跳过了。"], skipped: true };
+      yield {
+        kind: "text",
+        text: "旧消息，被跳过了。",
+        sentences: ["旧消息，被跳过了。"],
+        skipped: true,
+      };
     },
   });
 
@@ -643,4 +658,22 @@ test("第一帧就失败：502，不是 200 + 空流", async () => {
   const res = await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" });
   assert.equal(res.status, 502);
   assert.match(res.headers.get("content-type") ?? "", /text\/plain/);
+});
+
+test('合成中途失败：发一帧 { kind: "failed" }，不是干净结束', async () => {
+  const app = router({
+    async *brainToHuman() {
+      yield { kind: "text", text: "一二。", sentences: ["一。", "二。"], skipped: false };
+      yield { kind: "text", text: "一。", audio: fakeOgg([1]), consumed_sentences: 1 };
+      yield { kind: "failed", consumed_sentences: 1 };
+    },
+  });
+
+  const frames = (await readFrames(
+    await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" }),
+  )) as Record<string, unknown>[];
+
+  assert.equal(frames.length, 3);
+  assert.equal(frames[2]?.kind, "failed");
+  assert.equal(frames[2]?.consumed_sentences, 1);
 });
