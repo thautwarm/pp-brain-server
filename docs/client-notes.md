@@ -54,8 +54,8 @@ while (true) {
 - **跳过积压**：下一个请求带 `skip_before: Date.now()`（UTC 毫秒，就用手机自己的钟）——比这个
   时刻早入队的消息不会合成，但会以 `skipped: true` 的文本帧回给你；你决定是显示、忽略、还是记进
   下一次的 `unheard_text`。
-- **一条响应里可能有零到多条 skipped 帧，然后才是真正的回复**：读完整条 body，别看到第一条
-  skipped 就断开。只有跳过的消息时 body 直接结束（没有 `empty` 帧），立刻重发即可。
+- **一条响应里最多一条 skipped 帧**，发完就结束 body。收到就重发，直到拿到真正的回复——所以
+  "第一条帧就是这条回复的首帧"这个假设仍然成立。
 - **`{ kind: "failed", consumed_sentences }`** 表示合成挂了：用首帧的 `sentences.length` 减它
   就知道差多少句。正常说完没有这一帧。不想处理这一帧的话，用
   `consumed_sentences < sentences.length` 判断也行，两者一致。

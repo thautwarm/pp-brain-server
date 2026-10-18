@@ -79,7 +79,7 @@
 <ul>
   <li><strong>第一帧不带音频</strong>：<code>text</code> 是整条原始文本（<code>&lt;!-- disable voice --&gt;</code> 段照原样保留），<code>sentences</code> 是 wtpsplit 的句子表（它的 join 不一定等于 <code>text</code>）。客户端可以先上屏。</li>
   <li><strong>之后每帧</strong>是"这一块念的文本 + 音频 + 累计消费的句子数"。被打断时用 <code>consumed_sentences</code> 算还剩几句没听到。</li>
-  <li><code>skipped: true</code>：客户端 <code>skip_before</code> 跳过的旧消息，只有文本帧、没有音频，<code>sentences</code> 为空数组。一条响应里可以有零到多条 skipped 帧，后面再跟真正的回复——读完整条 body。</li>
+  <li><code>skipped: true</code>：客户端 <code>skip_before</code> 跳过的旧消息，只有文本帧、没有音频，<code>sentences</code> 为空数组。一条响应里<strong>最多一条</strong> skipped 帧，发完即结束 body；收到就重发，直到拿到真正的回复。</li>
   <li><code>{ kind: "failed", consumed_sentences }</code>：合成挂了，可能发生在任意一块——包括第一块（此时 <code>consumed_sentences: 0</code>，一个音频帧都没有）。正常说完不会有这一帧；分句失败是 <code>502</code>，客户端断开也不发。</li>
   <li>整条都被静音时只有第一帧，没有音频帧。</li>
   <li><code>audio</code> 是 Ogg Opus，<strong>每帧是一个独立的文件</strong>：按帧解码，把 PCM 追加到播放队列，不要字节拼接。</li>

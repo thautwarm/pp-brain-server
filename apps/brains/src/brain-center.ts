@@ -363,10 +363,9 @@ export const Brains: BrainPorts = {
         // 不合成，也不静默丢掉——它可能正靠这段算"哪些我没听到"。
         const skipped = req.skip_before !== undefined && next.enqueuedAt < req.skip_before;
         yield* speak(brain, brainId, next, signal, skipped);
-        if (!skipped) return;
-        // 手上就这么多了：别让客户端为"下一条"再干等 25 秒，直接结束这一轮。
-        if (brain.inbounds.agent.length === 0) return;
-        continue;
+        // 一条响应只装一条消息：跳过的旧消息各占一条响应，客户端重发来排空；
+        // 真回复也永远单独占一条响应（"首帧"这个概念才立得住）。
+        return;
       }
 
       if (Date.now() >= deadline) return; // 等到超时：路由会发一个 empty 帧
