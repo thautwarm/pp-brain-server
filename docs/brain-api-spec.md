@@ -12,9 +12,9 @@
 | --- | --- |
 | 方法 | 四个端点一律 `POST` |
 | 路径 | 见 §3，无查询参数 |
-| 鉴权 | `Authorization: Bearer <token>`，四个端点都要求（流式同理） |
+| 鉴权 | `Authorization: Bearer <token>`，四个端点都要求 |
 | 请求体编码 | `application/msgpack` 或 `application/json`，各端点支持范围见 §2 |
-| 成功响应编码 | 与请求体编码相同（见 §2） |
+| 成功响应编码 | 与请求体编码相同（见 §2）；`/brain-to-human` 例外，固定 `application/octet-stream` |
 | 失败响应 | 非 2xx + `Content-Type: text/plain`，正文为一句人类可读的原因 |
 | 音色 | 可选请求头 `x-brain-voice`（旧名 `x-might-voice` 也认），两个提交端点都接受，只有 §3.3 影响合成 |
 
@@ -48,9 +48,9 @@
 
 编码判定：
 
-- `human-to-brain`、`brain-to-human`：只按 MessagePack 解析请求体，`Content-Type` 不参与判定。解析失败返回 `400`。响应恒为 MessagePack。
+- `human-to-brain`、`brain-to-human`：只按 MessagePack 解析请求体，`Content-Type` 不参与判定。解析失败返回 `400`。
+- `human-to-brain` 的响应是 MessagePack；`brain-to-human` 的响应是"前导 + Ogg 流"（§3.2）。
 - `agent-to-brain`、`brain-to-agent`：`Content-Type` 为 `application/json` 时按 JSON 解析，其余（含缺省）按 MessagePack 解析。响应使用同一编码。
-- `brain-to-human` 的响应是"前导 + Ogg 流"（§3.2），不再是 MessagePack。
 
 ---
 
@@ -249,7 +249,7 @@ brain 上不存音色，所以它不会影响这条以外的任何消息。
 | 上行 | `/human-to-brain` 请求的 `audio` | Ogg Opus | 16 kHz |
 | 下行 | `/brain-to-human` 响应 body（前导之后） | Ogg Opus 流 | **不保证**（见下） |
 
-- 音频在 MessagePack 中为 bin 类型，非 base64。
+- 上行音频在 MessagePack 里是 bin 类型（不是 base64）；下行是响应 body 里的连续字节流，不经过 MessagePack。
 - **服务端不保证、也不承诺下行的采样率。** 下行音频由 TTS 端点产出，服务端原样透传、不做重采样；
   它只是"碰巧"通常是 24 kHz。客户端不得依赖这个值。
 - Opus 内部恒为 48 kHz；Ogg Opus 头里的采样率只是提示信息。客户端解码器（如 Android 的
@@ -259,7 +259,8 @@ brain 上不存音色，所以它不会影响这条以外的任何消息。
 
 ## 7. 投递语义
 
-- `/brain-to-human` 与 `/brain-to-agent` 为长轮询。收到 `{ "kind": "empty" }` 表示当前无内容，客户端应立即重新发起请求，不得等待或退避。
+- `/brain-to-human` 与 `/brain-to-agent` 为长轮询。"没有内容"的表示：前者是 `文本长度 = 0`，后者是
+  `{ "kind": "empty" }`。客户端收到就应立即重新发起请求，不得等待或退避。
 - 消息**读即消费**：服务端取出后即从队列移除，无确认、无重投。响应未能送达客户端（连接中断等）即视为该条丢失。
 - 回复中断时同理：已经发出的字节算送达，未发出的部分不会重投。
 - 服务端队列有上限（当前 `/brain-to-agent` 64 条、`/brain-to-human` 待合成的文本 64 条）。达到上限时丢弃**最旧**的一条。
@@ -277,4 +278,4 @@ brain 上不存音色，所以它不会影响这条以外的任何消息。
 | `/brain-to-agent` | 25 s | 长轮询上限，超时返回 `empty` |
 | `/brain-to-human` | 25 s | **只约束等到有内容**；开始出声后可以挂到说完（§3.2） |
 
-上述值为服务端默认，可配置。客户端应把长轮询上限视为"服务端可能长时间不返回"，并按 §7 处理 `empty`。
+上述值为服务端默认，可配置。客户端应把长轮询上限视为"服务端可能长时间不返回"，并按 §7 处理"没有内容"。

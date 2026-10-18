@@ -29,7 +29,7 @@
 <table>
   <tr><th>项</th><th>约定</th></tr>
   <tr><td>方法</td><td>四个端点一律 <code>POST</code>，无查询参数</td></tr>
-  <tr><td>鉴权</td><td><code>Authorization: Bearer &lt;token&gt;</code>，四个端点都要求（流式同理）。服务端 token 为空字符串表示不启用鉴权，此时客户端不发送这个头</td></tr>
+  <tr><td>鉴权</td><td><code>Authorization: Bearer &lt;token&gt;</code>，四个端点都要求。服务端 token 为空字符串表示不启用鉴权，此时客户端不发送这个头</td></tr>
   <tr><td>请求体编码</td><td><code>application/msgpack</code> 或 <code>application/json</code>，各端点支持范围见下表</td></tr>
   <tr><td>成功响应编码</td><td>与请求体编码相同；<code>/brain-to-human</code> 恒为 <code>application/octet-stream</code>（前导 + Ogg 流）</td></tr>
   <tr><td>失败响应</td><td>非 2xx + <code>Content-Type: text/plain</code>，正文为一句人类可读的原因</td></tr>
@@ -152,17 +152,17 @@ read 1 byte -&gt; flags                     // bit0 = 1：被跳过的旧消息�
 <table>
   <tr><th>方向</th><th>字段</th><th>编码</th><th>采样率</th></tr>
   <tr><td>上行</td><td><code>/human-to-brain</code> 请求的 <code>audio</code></td><td>Ogg Opus</td><td>16 kHz</td></tr>
-  <tr><td>下行</td><td><code>/brain-to-human</code> 响应的 <code>audio</code></td><td>Ogg Opus</td><td><strong>不保证</strong>（见下）</td></tr>
+  <tr><td>下行</td><td><code>/brain-to-human</code> 响应 body（前导之后）</td><td>Ogg Opus 流</td><td><strong>不保证</strong>（见下）</td></tr>
 </table>
 <ul>
-  <li>音频在 MessagePack 中为 bin 类型，非 base64。</li>
+  <li>上行音频在 MessagePack 里是 bin 类型（不是 base64）；下行是响应 body 里的连续字节流，不经过 MessagePack。</li>
   <li>下行音频由 TTS 端点产出，服务端原样透传、不做重采样；它只是"碰巧"通常是 24 kHz，客户端不得依赖这个值。</li>
   <li>Opus 内部恒为 48 kHz；Ogg Opus 头里的采样率只是提示信息。客户端解码器（如 Android 的 <code>MediaCodec</code>）通常直接输出 48 kHz。<strong>客户端必须读解码器实际输出的采样率再据此重采样，不得写死。</strong></li>
 </ul>
 
 <h2>投递语义</h2>
 <ul>
-  <li><code>/brain-to-human</code> 与 <code>/brain-to-agent</code> 为长轮询。收到 <code>{ "kind": "empty" }</code> 表示当前无内容，客户端应立即重新发起请求，不得等待或退避。</li>
+  <li><code>/brain-to-human</code> 与 <code>/brain-to-agent</code> 为长轮询。"没有内容"的表示：前者是 <code>文本长度 = 0</code>，后者是 <code>{ "kind": "empty" }</code>。客户端收到就应立即重新发起请求，不得等待或退避。</li>
   <li>消息<strong>读即消费</strong>：服务端取出后即从队列移除，无确认、无重投。响应未能送达客户端即视为该条丢失；回复中断时同理，已经发出的字节算送达。</li>
   <li>队列有上限（当前两个方向各 64 条）。达到上限时丢弃<strong>最旧</strong>的一条。</li>
   <li>每个 <code>brain_id</code> 的每个出向队列只应由<strong>一个</strong>消费者轮询。多个消费者会各自取走一部分消息。</li>
