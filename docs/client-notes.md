@@ -57,7 +57,8 @@ while (true) {
 - **一条响应里可能有零到多条 skipped 帧，然后才是真正的回复**：读完整条 body，别看到第一条
   skipped 就断开。只有跳过的消息时 body 直接结束（没有 `empty` 帧），立刻重发即可。
 - **`{ kind: "failed", consumed_sentences }`** 表示合成中途挂了：用首帧的 `sentences.length` 减它
-  就知道差多少句。正常说完没有这一帧。
+  就知道差多少句。正常说完没有这一帧。不想处理这一帧的话，用
+  `consumed_sentences < sentences.length` 判断也行，两者一致。
 
 ## 打断语义
 
