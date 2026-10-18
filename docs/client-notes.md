@@ -56,9 +56,11 @@ while (true) {
   下一次的 `unheard_text`。
 - **一条响应里可能有零到多条 skipped 帧，然后才是真正的回复**：读完整条 body，别看到第一条
   skipped 就断开。只有跳过的消息时 body 直接结束（没有 `empty` 帧），立刻重发即可。
-- **`{ kind: "failed", consumed_sentences }`** 表示合成中途挂了：用首帧的 `sentences.length` 减它
+- **`{ kind: "failed", consumed_sentences }`** 表示合成挂了：用首帧的 `sentences.length` 减它
   就知道差多少句。正常说完没有这一帧。不想处理这一帧的话，用
   `consumed_sentences < sentences.length` 判断也行，两者一致。
+- `failed` 也可能出现在**第一块**（`consumed_sentences: 0`）：文本帧之后一个音频帧都没有。
+  和"整条被静音"的区别是后者 `sentences` 是空数组、且不会有 `failed`。
 
 ## 打断语义
 

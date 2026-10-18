@@ -120,9 +120,15 @@
 - 之后每帧是"一块文本 + 它的音频"：`text` 是**这一块**念的文本（不用于展示，用于算跳过/没听到），
   `consumed_sentences` 是**累计**已消费的句子数。客户端被打断时靠它算还差多少句没听到。
 - `skipped: true`：这条是客户端用 `skip_before` 跳过的旧消息，只有这一帧，没有音频（见下）。
-- `failed`：合成中途挂了，这条到此为止。客户端拿 `consumed_sentences` 和首帧的 `sentences` 比，
+- `failed`：合成挂了，这条到此为止。客户端拿 `consumed_sentences` 和首帧的 `sentences` 比，
   就知道差了多少句。**正常说完不会有这一帧**（body 干净结束）。不想专门处理这一帧的客户端也可以
   直接用 `consumed_sentences < sentences.length` 判断，两条信息始终一致。
+  - 任何一块都可能失败，**包括第一块**：那时 `consumed_sentences` 是 `0`，客户端只收到文本帧，
+    一个音频帧都没有。
+  - 分句失败不会走到这里（还没发任何帧，直接 `502`）；客户端自己断开也不会发（那是正常行为）。
+  - 区分三种"没有音频帧"：`sentences` 非空 + `failed` = 合成挂了；`sentences` 为空 = 整条被
+    `<!-- disable voice -->` 静音（合法）；`failed` 且 `sentences` 非空但 `consumed_sentences > 0`
+    = 播到一半断的。
 - 整条都被静音时只有第一帧，没有音频帧。
 - `audio` 是 Ogg Opus（采样率见 §6），**每帧是一个独立的文件**：按帧解码，把 PCM 追加到播放队列，
   不要字节拼接。
