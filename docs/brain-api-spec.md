@@ -12,7 +12,7 @@
 | --- | --- |
 | 方法 | 四个端点一律 `POST` |
 | 路径 | 见 §3，无查询参数 |
-| 鉴权 | `Authorization: Bearer <token>`，四个端点都要求 |
+| 鉴权 | `Authorization: Bearer <token>`，四个端点都要求（流式同理） |
 | 请求体编码 | `application/msgpack` 或 `application/json`，各端点支持范围见 §2 |
 | 成功响应编码 | 与请求体编码相同（见 §2） |
 | 失败响应 | 非 2xx + `Content-Type: text/plain`，正文为一句人类可读的原因 |
@@ -26,6 +26,7 @@
 | `400` | 请求体形状或编码不合法 |
 | `401` | 鉴权失败 |
 | `500` | 服务端内部失败 |
+| `502` | 上游失败（转写 / 分句 / 合成），见 §3.1、§3.2 |
 
 约定：
 
@@ -41,7 +42,7 @@
 | 端点 | 方向 | 语义 | 请求体编码 | 响应体编码 |
 | --- | --- | --- | --- | --- |
 | `POST /human-to-brain` | 人类 → brain | 提交，等待转写 | 仅 MessagePack | MessagePack |
-| `POST /brain-to-human` | brain → 人类 | 长轮询 | 仅 MessagePack | MessagePack |
+| `POST /brain-to-human` | brain → 人类 | 长轮询，分帧流 | 仅 MessagePack | MessagePack 帧流（§3.2） |
 | `POST /agent-to-brain` | agent → brain | 提交，立即返回 | MessagePack / JSON | 同请求编码 |
 | `POST /brain-to-agent` | brain → agent | 长轮询 | MessagePack / JSON | 同请求编码 |
 
@@ -49,6 +50,7 @@
 
 - `human-to-brain`、`brain-to-human`：只按 MessagePack 解析请求体，`Content-Type` 不参与判定。解析失败返回 `400`。响应恒为 MessagePack。
 - `agent-to-brain`、`brain-to-agent`：`Content-Type` 为 `application/json` 时按 JSON 解析，其余（含缺省）按 MessagePack 解析。响应使用同一编码。
+- `brain-to-human` 的响应恒为 MessagePack **帧流**（§3.2），没有"单个对象"的形态。
 
 ---
 
@@ -88,26 +90,42 @@
 
 ### 3.2 `POST /brain-to-human`
 
-长轮询，取 brain 对人类的回复。
+长轮询，取 brain 对人类的回复。**响应是分帧流**：一条回复拆成若干帧，合成出一段就吐一段。
 
 请求（MessagePack）：
 
 ```ts
-{ brain_id: string }
+{ brain_id: string, skip_before?: number }
 ```
 
-响应（MessagePack）：
+响应（MessagePack **帧流**）：
+
+```
+[u32 大端长度][MessagePack]   ← 一帧，重复 N 次
+```
+
+每帧：
 
 ```ts
-{ kind: "empty" }                                    // 无内容，客户端应立即重发
-| { kind: "text", text: string, audio: Uint8Array }  // audio = Ogg Opus 单声道（采样率见 §6）
+{ kind: "text", text: string, audio: Uint8Array }  // 第一帧
+{ kind: "text", audio: Uint8Array }                // 后续帧
+{ kind: "empty" }                                  // 等到超时、没有内容
 ```
 
-服务端行为：
+- **`text` 只在第一帧出现**，而且是这条回复的**原始文本**：`<!-- disable voice -->` 段照原样保留
+  （那些段不合成语音，但文字仍然是 agent 说的话）。后续帧只有 `audio`。
+- 整条都被静音时只发一帧：`{ kind: "text", text }`，没有 `audio`。
+- `audio` 是 Ogg Opus（采样率见 §6），**每帧是一个独立的文件**：按帧解码，把 PCM 追加到播放队列，
+  不要字节拼接。
+- 超时（§8）只约束**等第一帧**；开始吐帧之后，这条连接可以一直挂到说完。
+- **没有 `final` 字段**：body 正常结束 = 说完了。读不到完整的一帧（连接中断、长度越界）= 截断，
+  客户端重新发起请求即可。
+- 无内容时挂到长轮询上限，然后发一帧 `empty`；客户端收到就立刻重发。
+- 客户端断开，服务端立即停止后续合成；已经取走的这条消息不会重投（§7）。
+- `skip_before`（可选，UTC epoch **毫秒**，客户端的钟）：早于这个时刻入队的 agent 消息**直接丢掉**，
+  不合成、不发送。客户端不耐烦、跳过了积压的几条（比如上一轮还在说）时带上它，从最新的开始说。
 
-- 无内容时挂起，直到有内容、客户端断开、或达到长轮询上限（见 §8），然后返回 `empty`。
-
-状态码：见 §1。
+怎么切块不在协议里：客户端只该假设"第一帧的文本是整条回复，音频按序拼起来就是整条语音"。
 
 ---
 
@@ -231,7 +249,7 @@ brain 上不存音色，所以它不会影响这条以外的任何消息。
 - 两个标记之间的内容（含标记本身）不进入语音合成；`text` 本身不受影响：人类侧仍显示完整文本。
 - 一条 `text` 内可出现多组。
 - 标记不成对时，开区间自标记处延续至文本末尾；单独的 `<!-- enable voice -->` 视为普通标记被移除。
-- 整段均处于禁用状态时，该条内容不产生语音，也不会出现在 §3.2 的响应中。
+- 整段均处于禁用状态时，该条内容不产生语音：§3.2 里只会有一帧 `{ kind: "text", text }`，没有 `audio`。
 
 ---
 
@@ -254,7 +272,8 @@ brain 上不存音色，所以它不会影响这条以外的任何消息。
 
 - `/brain-to-human` 与 `/brain-to-agent` 为长轮询。收到 `{ "kind": "empty" }` 表示当前无内容，客户端应立即重新发起请求，不得等待或退避。
 - 消息**读即消费**：服务端取出后即从队列移除，无确认、无重投。响应未能送达客户端（连接中断等）即视为该条丢失。
-- 服务端队列有上限（当前 `/brain-to-agent` 64 条、`/brain-to-human` 12 条）。达到上限时丢弃**最旧**的一条。
+- 回复中断时同理：已发出的帧算送达，未发出的部分不会重投。
+- 服务端队列有上限（当前 `/brain-to-agent` 64 条、`/brain-to-human` 待合成的文本 64 条）。达到上限时丢弃**最旧**的一条。
 - 每个 `brain_id` 的每个出向队列只应由**一个**消费者轮询。多个消费者会各自取走一部分消息。
 - 失败一律通过 HTTP 状态码表达。协议层不定义错误消息体，也不存在表示错误的 `kind`。客户端对网络错误的重试策略自负；`401` 不应重试。
 
@@ -265,6 +284,7 @@ brain 上不存音色，所以它不会影响这条以外的任何消息。
 | 项 | 当前值 | 说明 |
 | --- | --- | --- |
 | `/human-to-brain` | 13 s | 转写上限，超时返回 `502` |
-| `/brain-to-human`、`/brain-to-agent` | 25 s | 长轮询上限，超时返回 `empty` |
+| `/brain-to-agent` | 25 s | 长轮询上限，超时返回 `empty` |
+| `/brain-to-human` | 25 s | **只约束等第一帧**；开始吐帧后可以挂到说完（§3.2） |
 
 上述值为服务端默认，可配置。客户端应把长轮询上限视为"服务端可能长时间不返回"，并按 §7 处理 `empty`。

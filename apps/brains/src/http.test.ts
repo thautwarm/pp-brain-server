@@ -45,9 +45,12 @@ function fakePorts(overrides: Partial<BrainPorts> = {}): BrainPorts {
     humanToBrain() {
       return Promise.resolve({ kind: "text", text: "人类文本" });
     },
-    async brainToHuman(_request, { signal }) {
-      await untilAborted(signal);
-      return { kind: "empty" };
+    // 默认什么都不产出：挂到超时（路由会补一个 empty 帧）或客户端断开。
+    async *brainToHuman(_request, { signal, waitMs }) {
+      await Promise.race([
+        untilAborted(signal),
+        new Promise((resolve) => setTimeout(resolve, waitMs)),
+      ]);
     },
     agentToBrain() {
       return Promise.resolve({ kind: "empty" });
@@ -58,6 +61,23 @@ function fakePorts(overrides: Partial<BrainPorts> = {}): BrainPorts {
     },
     ...overrides,
   };
+}
+
+/** 把流式响应按 `[u32 大端长度][MessagePack]` 拆回对象；顺带验证前缀没写错。 */
+async function readFrames(res: Response): Promise<unknown[]> {
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out: unknown[] = [];
+  let at = 0;
+  while (at < bytes.byteLength) {
+    assert.ok(at + 4 <= bytes.byteLength, "帧头被截断");
+    const length = view.getUint32(at);
+    at += 4;
+    assert.ok(at + length <= bytes.byteLength, "帧体被截断");
+    out.push(decode(bytes.subarray(at, at + length)));
+    at += length;
+  }
+  return out;
 }
 
 function router(overrides: Partial<BrainPorts> = {}, token = "", pollTimeoutMs = 20): Hono {
@@ -258,23 +278,25 @@ test("human-to-brain 里 brain 抛了就是 5xx，不是空响应", async () => 
 
 // brain-to-human：长轮询
 
-test('brain-to-human 没话说时挂到超时，返回 { kind: "empty" }', async () => {
+test('brain-to-human 没话说时挂到超时，最后补一个 { kind: "empty" } 帧', async () => {
   const started = Date.now();
   const res = await postMsgpack(router({}, "", 30), "/brain-to-human", { brain_id: "员工3" });
+  // 流式响应是先回头、后出帧，所以"挂住"要从读 body 才算得出来。
+  const frames = await readFrames(res);
   const elapsed = Date.now() - started;
 
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type")?.split(";")[0], "application/msgpack");
-  assert.deepEqual(await reply(res), { kind: "empty" });
+  assert.deepEqual(frames, [{ kind: "empty" }]);
   // 真的是"挂住"到超时，不是立刻返回。
   assert.ok(elapsed >= 25, `应当阻塞到超时，实际只用了 ${elapsed}ms`);
 });
 
-test("brain-to-human 有回复时返回文本 + 音频，音频原样带出", async () => {
+test("brain-to-human 有回复时按帧返回文本 + 音频，音频原样带出", async () => {
   const audio = fakeOgg([0xde, 0xad, 0xbe, 0xef]);
   const app = router({
-    brainToHuman() {
-      return Promise.resolve({ kind: "text", text: "你好呀", audio });
+    async *brainToHuman() {
+      yield { text: "你好呀", audio };
     },
   });
 
@@ -282,10 +304,10 @@ test("brain-to-human 有回复时返回文本 + 音频，音频原样带出", as
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("content-type")?.split(";")[0], "application/msgpack");
 
-  const body = (await reply(res)) as { kind: string; text: string; audio: Uint8Array };
-  assert.equal(body.kind, "text");
-  assert.equal(body.text, "你好呀");
-  assert.ok(Buffer.from(body.audio).equals(Buffer.from(audio)), "音频字节要原样还原");
+  const frames = (await readFrames(res)) as { kind: string; text: string; audio: Uint8Array }[];
+  assert.equal(frames[0]?.kind, "text");
+  assert.equal(frames[0]?.text, "你好呀");
+  assert.ok(Buffer.from(frames[0]?.audio ?? []).equals(Buffer.from(audio)), "音频字节要原样还原");
 });
 
 test("brain-to-human 缺 brain_id 是 400，请求体不是 msgpack 也是 400", async () => {
@@ -333,18 +355,17 @@ test("音色是 per-request：两个提交端点都往下传（新名/旧名都�
   assert.equal(seen.agent, "voice-b");
 });
 
-test("brain 抛了但其实是超时，也算 empty 而不是 5xx", async () => {
+test("流中途抛了：已发的帧照常送达，然后干净结束（不是 5xx）", async () => {
   const app = router({
-    async brainToHuman(_request, { signal }) {
-      await untilAborted(signal);
-      // 端口实现没守"中止就返回 empty"的约定，路由要兜住。
-      throw new Error("端口实现没守约定");
+    async *brainToHuman() {
+      yield { text: "前半句。", audio: fakeOgg([1]) };
+      throw new Error("上游 TTS 挂了");
     },
   });
 
   const res = await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" });
   assert.equal(res.status, 200);
-  assert.deepEqual(await reply(res), { kind: "empty" });
+  assert.equal((await readFrames(res)).length, 1);
 });
 
 test("带音频的两个端点只走 MessagePack：JSON 请求也是 400", async () => {
@@ -479,8 +500,8 @@ test("真 server：四个端点都接得上", async () => {
     humanToBrain() {
       return Promise.resolve({ kind: "text", text: "人类文本" });
     },
-    brainToHuman() {
-      return Promise.resolve({ kind: "text", text: "ai文本", audio });
+    async *brainToHuman() {
+      yield { text: "ai文本", audio };
     },
     agentToBrain() {
       return Promise.resolve({ kind: "empty" });
@@ -511,10 +532,14 @@ test("真 server：四个端点都接得上", async () => {
 
     const responded = await sendMsgpack("/brain-to-human", { brain_id: "员工3" });
     assert.equal(responded.status, 200);
-    const body = (await reply(responded)) as { kind: string; text: string; audio: Uint8Array };
-    assert.equal(body.kind, "text");
-    assert.equal(body.text, "ai文本");
-    assert.ok(Buffer.from(body.audio).equals(Buffer.from(audio)), "音频字节要原样还原");
+    const frames = (await readFrames(responded)) as {
+      kind: string;
+      text: string;
+      audio: Uint8Array;
+    }[];
+    assert.equal(frames[0]?.kind, "text");
+    assert.equal(frames[0]?.text, "ai文本");
+    assert.ok(Buffer.from(frames[0]?.audio ?? []).equals(Buffer.from(audio)), "音频字节要原样还原");
 
     // agent 那对各挑一种编码走真 socket，两种都验到。
     const acted = await sendJson("/agent-to-brain", { brain_id: "员工3", text: "开灯" });
@@ -527,4 +552,86 @@ test("真 server：四个端点都接得上", async () => {
   } finally {
     await server.close();
   }
+});
+
+test("一条回复拆成多帧，每帧 [u32 长度][msgpack]", async () => {
+  const app = router({
+    async *brainToHuman() {
+      yield { text: "第一句。", audio: fakeOgg([1]) };
+      yield { audio: fakeOgg([2, 3]) };
+    },
+  });
+
+  const res = await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") ?? "", /application\/msgpack/);
+
+  const frames = (await readFrames(res)) as { kind: string; text?: string; audio?: Uint8Array }[];
+  assert.equal(frames.length, 2);
+  assert.equal(frames[0]?.kind, "text");
+  assert.equal(frames[0]?.text, "第一句。");
+  assert.deepEqual(new Uint8Array(frames[0]?.audio ?? []), fakeOgg([1]));
+  assert.equal("text" in (frames[1] ?? {}), false, "后续帧不该带 text");
+  assert.deepEqual(new Uint8Array(frames[1]?.audio ?? []), fakeOgg([2, 3]));
+});
+
+test("等到超时：只有一个 empty 帧", async () => {
+  const app = router({ async *brainToHuman() {} });
+
+  const res = await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await readFrames(res), [{ kind: "empty" }]);
+});
+
+test("skip_before：原样递给端口（UTC 毫秒）", async () => {
+  let seen: number | undefined;
+  const app = router({
+    async *brainToHuman(request) {
+      seen = request.skip_before;
+    },
+  });
+
+  await readFrames(
+    await postMsgpack(app, "/brain-to-human", { brain_id: "员工3", skip_before: 1734567890123 }),
+  );
+  assert.equal(seen, 1734567890123);
+
+  const bad = await postMsgpack(app, "/brain-to-human", {
+    brain_id: "员工3",
+    skip_before: "不是数字",
+  });
+  assert.equal(bad.status, 400);
+  assert.equal(seen, 1734567890123, "非法值应当是 400，不该递下去");
+});
+
+test("只有第一帧带 text（原始文本），后续帧只有音频", async () => {
+  const app = router({
+    async *brainToHuman() {
+      yield { text: "原始文本 <!-- disable voice -->（这段不念）", audio: fakeOgg([1]) };
+      yield { audio: fakeOgg([2]) };
+    },
+  });
+
+  const frames = (await readFrames(
+    await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" }),
+  )) as { kind: string; text?: string; audio?: Uint8Array }[];
+
+  assert.equal(frames.length, 2);
+  assert.equal(frames[0]?.text, "原始文本 <!-- disable voice -->（这段不念）");
+  assert.ok(frames[0]?.audio);
+  assert.equal("text" in (frames[1] ?? {}), false, "后续帧不该带 text");
+  assert.ok(frames[1]?.audio);
+});
+
+test("第一帧就失败：502，不是 200 + 空流", async () => {
+  const app = router({
+    // biome-ignore lint/correctness/useYield: 就是要测"一帧都没发就炸"
+    async *brainToHuman() {
+      throw new Error("分句服务挂了");
+    },
+  });
+
+  const res = await postMsgpack(app, "/brain-to-human", { brain_id: "员工3" });
+  assert.equal(res.status, 502);
+  assert.match(res.headers.get("content-type") ?? "", /text\/plain/);
 });

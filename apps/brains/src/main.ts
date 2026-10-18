@@ -44,6 +44,8 @@ required("MIGHT_CHAT_API_BASE_URL");
 // 默认音色。必填是有原因的：@ai-sdk/openai 的 speech 在 voice 为 undefined 时会自己塞
 // "alloy"，而自建的 TTS 未必认这个名字 —— 宁可启动时就报出来。
 required("TTS_VOICE");
+// 流式 /brain-to-human 靠它切句（硬依赖，不做本地兜底）。
+required("WTP_SPLIT_URL");
 
 // 没有 brain 清单：`brain_id` 由客户端随便给，第一次出现时现建（空闲 2 小时自动卸载，见
 // brain-center）。所以启动时没什么可读的配置文件。
@@ -57,7 +59,7 @@ const app = createBrainRouter({
   pollTimeoutMs: envInt("MIGHT_BRAINS_POLL_TIMEOUT_MS", 25000),
 });
 
-// 修订和 TTS 都跑在这里面。它每步自己吞异常，所以不用 await，也不用管它的返回值。
+// 修订和空闲淘汰都跑在这里面。它每步自己吞异常，所以不用 await，也不用管它的返回值。
 startBackgroundTask();
 
 // **容器里 node 就是 PID 1**，而内核不对 PID 1 施加"默认动作"信号——我们又没装 handler，
@@ -66,7 +68,7 @@ startBackgroundTask();
 // 装个 handler 是这个问题最短的解法；`init: true` 也行（见 docker-compose.yaml）。
 //
 // 直接退出、不做 graceful drain：这个进程的状态全在内存里，重启本来就清零，没必要为了
-// 让在途的长轮询（最长 25 秒）跑完而再拖一次 10 秒。
+// 让在途的请求（长轮询 25 秒；流式回复可能更久）跑完而再拖一次 10 秒。
 process.on("SIGTERM", () => {
   console.log("收到 SIGTERM，退出");
   process.exit(0);

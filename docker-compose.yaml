@@ -10,6 +10,26 @@ services:
     # 密钥和端点都从这里进容器，不烘进镜像。
     env_file:
       - .env
+    depends_on:
+      wtpsplit:
+        # 等它把模型加载完再起：不然流式请求会撞上 ECONNREFUSED。
+        condition: service_healthy
     ports:
       - "18781:8787"
     restart: unless-stopped
+
+  # 分句服务（wtpsplit-lite / SaT）。只走 compose 内网，不对外暴露端口；地址给 brains 的
+  # WTP_SPLIT_URL。流式 /brain-to-human 是硬依赖：它挂了，流式请求就断。
+  wtpsplit:
+    build: ./services/wtpsplit
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 60s

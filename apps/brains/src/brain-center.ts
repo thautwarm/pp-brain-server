@@ -3,6 +3,7 @@ import type { ApplicationMessage } from "@might/chat";
 import { Format, SizedQueueOps } from "./format.ts";
 import type { BrainPorts } from "./http.ts";
 import { maybeCompression, reviseText } from "./revise.ts";
+import { splitForTts } from "./split.ts";
 import { callTranscript, callVoiceGen } from "./stt-tts.ts";
 
 type HistoryItem =
@@ -40,14 +41,13 @@ export interface Brain {
   inbounds: {
     // 音色是 per-request 的：agent-to-brain 带的那个跟着这条消息走，入队时存进队列项；没带
     // 就等合成时用全局 `TTS_VOICE`。brain 上不存音色。
-    agent: { text: string; voice?: string }[];
+    //
+    // `enqueuedAt` 是服务端的 UTC 毫秒，用来配合客户端的 `skip_before` 丢弃积压（见 brainToHuman）。
+    agent: { text: string; voice?: string; enqueuedAt: number; attempts?: number }[];
   };
 
   outbounds: {
     agent: { text: string }[];
-
-    // agent 回复给人类的 text 和 audio
-    human: { text: string; audio: Uint8Array }[];
   };
 }
 
@@ -93,7 +93,7 @@ function brainOf(brainId: string): Brain {
       dirty: 0,
       lastActiveAt: Date.now(),
       inbounds: { agent: [] },
-      outbounds: { agent: [], human: [] },
+      outbounds: { agent: [] },
     };
     brainsStore.set(brainId, brain);
     console.log(`[brain] ${brief(brainId)} 第一次出现，已创建`);
@@ -158,14 +158,116 @@ function takeFromAgent(
   return item;
 }
 
+/**
+ * 准备要念的文本：先过 `forTts`（`<!-- disable voice -->` 段不念），再交给分句服务装箱。
+ *
+ * 返回空数组 = 整段都不该念（调用点自己决定是"跳过"还是"回 empty"）。
+ */
+async function chunkForTts(text: string, signal: AbortSignal): Promise<string[]> {
+  const spoken = Format.forTts(text);
+  if (spoken.trim() === "") return [];
+  return splitForTts(spoken, signal);
+}
+
+type AgentItem = Brain["inbounds"]["agent"][number];
+
+/** 一条消息最多试几次（分句或第一块 TTS 连续失败就不再挡着后面的消息）。 */
+const MAX_ATTEMPTS = 3;
+
+/**
+ * 把没送出去的消息放回头部。
+ *
+ * **只有还没吐出第一帧时才能放回**——已经发了一半的再放回会让客户端把前半句听两遍。
+ * 客户端自己断开的（`signal.aborted`）不算失败：这条还没送到，留着下次。
+ */
+function requeue(brain: Brain, brainId: string, item: AgentItem, signal: AbortSignal): void {
+  if (signal.aborted) {
+    brain.inbounds.agent.unshift(item);
+    return;
+  }
+
+  item.attempts = (item.attempts ?? 0) + 1;
+  if (item.attempts >= MAX_ATTEMPTS) {
+    console.error(`[tts] ${brief(brainId)} 连续 ${item.attempts} 次失败，丢掉 ${brief(item.text)}`);
+    return;
+  }
+  brain.inbounds.agent.unshift(item);
+}
+
+/**
+ * 把一条消息念成帧。
+ *
+ * 第一帧带**原始**文本（`forTts` 之前的那份）——念出来的可能只是其中一部分，但客户端要显示
+ * 的是整条回复；之后每帧只有音频。
+ */
+async function* speak(
+  brain: Brain,
+  brainId: string,
+  item: AgentItem,
+  signal: AbortSignal,
+): AsyncGenerator<{ text?: string; audio?: Uint8Array }> {
+  let chunks: string[];
+  try {
+    chunks = await chunkForTts(item.text, signal);
+  } catch (cause) {
+    requeue(brain, brainId, item, signal);
+    throw cause; // 一帧都没发出去：交给路由变成 502
+  }
+
+  if (chunks.length === 0) {
+    // 整条都被静音了：不合成，但原始文本还是要给客户端（它得显示出来）。
+    console.warn(`[tts] ${brief(brainId)} 整段都被静音了，只发文本 ${brief(item.text)}`);
+    yield { text: item.text };
+    return;
+  }
+
+  const voice = item.voice ?? process.env.TTS_VOICE;
+  if (voice === undefined || voice === "") {
+    console.warn(`[tts] ${brief(brainId)} 没有音色可用，只发文本 ${brief(item.text)}`);
+    yield { text: item.text };
+    return;
+  }
+
+  for (const [index, chunk] of chunks.entries()) {
+    if (signal.aborted) return; // 客户端断了：剩下的不合成
+
+    let audio: Uint8Array;
+    try {
+      ({ audio } = await callVoiceGen(chunk, voice, { signal }));
+    } catch (cause) {
+      // 第一块就失败：还没发出去任何东西，整条放回去下次再试。
+      if (index === 0) requeue(brain, brainId, item, signal);
+      throw cause;
+    }
+
+    yield index === 0 ? { text: item.text, audio } : { audio };
+  }
+}
+
+/**
+ * 丢掉入队早于 `before` 的 agent 消息（客户端说"这些我已经跳过了"）。
+ *
+ * `before` 是**客户端的钟**（UTC 毫秒）——客户端和服务端对过时，所以直接比。
+ */
+function dropBefore(brain: Brain, brainId: string, before: number | undefined): void {
+  if (before === undefined) return;
+
+  const kept = brain.inbounds.agent.filter((item) => item.enqueuedAt >= before);
+  const dropped = brain.inbounds.agent.length - kept.length;
+  if (dropped === 0) return;
+
+  brain.inbounds.agent.splice(0, brain.inbounds.agent.length, ...kept);
+  console.log(
+    `[agent] skip ${brief(brainId)} 丢掉 ${dropped} 条早于 ${new Date(before).toISOString()} 的消息`,
+  );
+}
+
 /** 日志里只留前 60 个字：转录可能很长，别把整段刷进日志。 */
 function brief(text: string): string {
   return JSON.stringify(text.length > 60 ? `${text.slice(0, 60)}…` : text);
 }
 
-const maxParallelTTS = 10;
 const backgroundTaskState = {
-  tts: 0,
   started: false,
 };
 
@@ -209,46 +311,6 @@ async function backgroundTaskStep() {
       };
       job().catch((e) => console.error(`[revise] ${brief(brainId)} 失败`, e));
     }
-
-    for (const it of [...brain.inbounds.agent]) {
-      const inQueue = async (brain: Brain, it: Brain["inbounds"]["agent"][number]) => {
-        if (backgroundTaskState.tts >= maxParallelTTS) return;
-        if (!brain.inbounds.agent.includes(it)) return;
-        try {
-          backgroundTaskState.tts++;
-          SizedQueueOps.removeByIdentity(brain.inbounds.agent, it);
-
-          // 念的是 forTts 过的那份（`<!-- disable voice -->` 段不念），
-          // 推给人类的 text 还是原文 —— "不念"不等于"不显示"。
-          const spoken = Format.forTts(it.text);
-          if (spoken.trim() === "") {
-            console.warn(`[tts] ${brief(brainId)} 整段都被静音了，跳过合成 ${brief(it.text)}`);
-            return;
-          }
-
-          // 音色必须是一个真实的值：@ai-sdk/openai 的 speech 在 voice 为 undefined 时会
-          // 自作主张塞 "alloy"，那不是"不传"。所以拿不到就跳过，别让它偷偷发 alloy。
-          const voice = it.voice ?? process.env.TTS_VOICE;
-          if (voice === undefined || voice === "") {
-            console.warn(
-              `[tts] ${brief(brainId)} 没有音色可用（TTS_VOICE 没配、请求也没带），跳过合成 ${brief(it.text)}`,
-            );
-            return;
-          }
-
-          const ttsResult = await callVoiceGen(spoken, voice, { signal: undefined });
-          SizedQueueOps.push(brain.outbounds.human, { text: it.text, audio: ttsResult.audio }, 12);
-        } catch (e) {
-          // 失败要能查：光有 error 不知道是哪句话、哪个 brain 打挂的（上游那个 500 尤其）
-          console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(it.text)}`, e);
-        } finally {
-          SizedQueueOps.removeByIdentity(brain.inbounds.agent, it);
-          backgroundTaskState.tts--;
-          backgroundTaskState.tts = Math.max(0, backgroundTaskState.tts);
-        }
-      };
-      inQueue(brain, it);
-    }
   }
 }
 
@@ -282,32 +344,34 @@ export const Brains: BrainPorts = {
     return { kind: "text", text: result.text };
   },
 
-  async brainToHuman(req, { signal }) {
-    // query interval: 50ms, once inbounds.agent is not empty, reply
+  async *brainToHuman(req, { signal, waitMs }) {
     const brain = brainOf(req.brain_id);
-    let agentReply = brain.outbounds.human.shift();
-    if (agentReply !== undefined) {
-      return { kind: "text", text: agentReply.text, audio: agentReply.audio };
-    }
+    const brainId = req.brain_id;
+    const deadline = Date.now() + waitMs;
 
-    while (brain.outbounds.human.length === 0) {
-      if (signal.aborted) {
-        return { kind: "empty" };
+    dropBefore(brain, brainId, req.skip_before);
+
+    while (!signal.aborted) {
+      // **原子取走**：两个并发请求不能拿到同一条；失败再放回头部（见 `requeue`）。
+      const next = brain.inbounds.agent.shift();
+      if (next !== undefined) {
+        yield* speak(brain, brainId, next, signal);
+        return;
       }
+
+      if (Date.now() >= deadline) return; // 等到超时：路由会发一个 empty 帧
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    agentReply = brain.outbounds.human.shift();
-    if (agentReply === undefined) {
-      return { kind: "empty" };
-    }
-
-    return { kind: "text", text: agentReply.text, audio: agentReply.audio };
   },
 
   async agentToBrain(req) {
     const brain = brainOf(req.brain_id);
     SizedQueueOps.push(brain.history, { kind: "agent-text", text: req.text }, 64);
-    SizedQueueOps.push(brain.inbounds.agent, { text: req.text, voice: req.voice }, 64);
+    SizedQueueOps.push(
+      brain.inbounds.agent,
+      { text: req.text, voice: req.voice, enqueuedAt: Date.now() },
+      64,
+    );
     brain.dirty = incDrity(brain.dirty);
     return { kind: "empty" };
   },

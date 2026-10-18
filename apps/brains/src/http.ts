@@ -1,5 +1,5 @@
 /**
- * Brain API 的 HTTP 层：四个端点、鉴权、请求校验、两个长轮询。
+ * Brain API 的 HTTP 层：四个端点、鉴权、请求校验、长轮询与分帧流。
  *
  * 这一层只认协议，不认 brain：队列、转写、模型、合成都归 brain 层。两边靠 BrainPorts
  * 这唯一的缝隔开——所以这个文件不 import @might/chat / @might/audio 的任何东西，
@@ -9,17 +9,18 @@
  * 名字就是 `<from>-to-<to>`，机械推导，不用记：
  *
  *   POST /human-to-brain   人类语音进，返回转录
- *   POST /brain-to-human   长轮询，取给人类的语音（文本 + 音频）
+ *   POST /brain-to-human   长轮询，取给人类的语音（分帧流：文本 + 音频）
  *   POST /agent-to-brain   agent 文本进
  *   POST /brain-to-agent   长轮询，取 brain 下放给 agent 的文本
  *
  * 方向还预告了 HTTP 语义：**进 brain 的是提交，立即返回；出 brain 的是长轮询，
- * 可以空手而归**（`{"kind":"empty"}`）。所以四个端点里没有"哪个要不要等"这种要背的东西。
+ * 可以空手而归**（`{"kind":"empty"}`；`/brain-to-human` 的那一个在帧流里）。
+ * 所以四个端点里没有"哪个要不要等"这种要背的东西。
  *
  * 数据流（方括号是队列，队列本身归 brain 层）：
  *
  *   human-to-brain   ─▶ [人类 audio] ──STT──▶ [给 agent 的文本] ─▶ brain-to-agent
- *   agent-to-brain   ─▶ [agent 文本] ──TTS──▶ [agent 音频]     ─▶ brain-to-human
+ *   agent-to-brain   ─▶ [agent 文本] ─(请求内 TTS)─▶ brain-to-human
  *
  * body 有两种编码，带不带二进制说了算：
  *
@@ -71,16 +72,27 @@ export interface BrainPorts {
   ): Promise<{ kind: "text"; text: string }>;
 
   /**
-   * `brain-to-human`：取 agent 要说的下一句（文本 + 它的语音）。
+   * `brain-to-human`：取 agent 要说的下一句。
    *
-   * **阻塞语义在这一层**：没话说就一直挂着，直到有话、`signal` 中止、或者客户端断开。
-   * 中止时返回 `{ kind: "empty" }`，**不要抛**——"暂时没话说"是规格里最正常的一条路径，
-   * 不是错误。
+   * **响应永远是分帧流**（见 `frameResponse`）：一帧一段文本 + 它的音频，合成一段就吐一帧，
+   * 不等整条回复。`waitMs` 只管**等到有内容为止**——一旦开始吐帧，这条连接可以挂到说完
+   * （几十秒）；断连由 `signal` 传进来，实现要立刻停手。
+   *
+   * 一帧都没有 = 超时（路由发一个 `{ kind: "empty" }` 帧收尾）。
    */
   brainToHuman(
-    request: { brain_id: string },
-    options: { signal: AbortSignal },
-  ): Promise<{ kind: "text"; text: string; audio: Uint8Array } | { kind: "empty" }>;
+    /**
+     * `skip_before`（可选，UTC epoch 毫秒，**客户端的钟**）：早于这个时刻入队的 agent 消息直接
+     * 丢掉——客户端不耐烦、跳过了积压的几条时用。语义见规格 §3.2。
+     */
+    request: { brain_id: string; skip_before?: number },
+    options: { signal: AbortSignal; waitMs: number },
+  ): AsyncIterable<{
+    /** 只有第一帧带：这条回复的**原始**文本（含 `<!-- disable voice -->` 段，原样）。 */
+    text?: string;
+    /** 这一块的音频。整条都被静音时第一帧没有音频。 */
+    audio?: Uint8Array;
+  }>;
 
   /**
    * `agent-to-brain`：agent 把一段文本交给 brain。
@@ -101,7 +113,7 @@ export interface BrainPorts {
    * 但也可能是别的东西（压缩后的 history、工具结果）——所以端口返回的是普通文本，
    * 不承诺它一定是转录。
    *
-   * 阻塞语义同 `brainToHuman`：中止返回 `{ kind: "empty" }`，不要抛。
+   * 阻塞语义同旧的长轮询：中止返回 `{ kind: "empty" }`，不要抛。
    */
   brainToAgent(
     request: { brain_id: string },
@@ -113,7 +125,7 @@ export interface RouterOptions {
   readonly ports: BrainPorts;
   /** 期望的 Bearer token。**空字符串 = 这个部署不启用鉴权**（规格 §0.2）。 */
   readonly token: string;
-  /** 两个长轮询端点各挂多久返回 empty。 */
+  /** 长轮询等多久：`/brain-to-agent` 等到有内容；`/brain-to-human` 只等到第一帧。 */
   readonly pollTimeoutMs: number;
 }
 
@@ -132,6 +144,12 @@ const humanToBrainBody = z.object({
   unheard_text: z.string().nullish(),
 });
 const brainIdOnly = z.object({ brain_id: z.string().min(1).max(64) });
+/** `/brain-to-human` 可以带一个 UTC 毫秒时间戳：早于它入队的消息直接丢。 */
+const brainToHumanBody = z.object({
+  brain_id: z.string().min(1).max(64),
+  // 上限是 Date 能表示的范围：再大 `new Date()` 会直接抛。
+  skip_before: z.number().int().nonnegative().max(8_640_000_000_000_000).nullish(),
+});
 const agentToBrainBody = z.object({
   brain_id: z.string().min(1).max(64),
   text: z.string().min(1),
@@ -166,18 +184,19 @@ export function createBrainRouter(options: RouterOptions): Hono {
   });
 
   app.post("/brain-to-human", async (c) => {
-    const parsed = brainIdOnly.safeParse(await readMsgpack(c.req.raw));
-    if (!parsed.success) return c.text("请求体要形如 { brain_id }（MessagePack）", 400);
-
-    try {
-      const reply = await poll(options.pollTimeoutMs, c.req.raw.signal, (signal) =>
-        options.ports.brainToHuman(parsed.data, { signal }),
-      );
-      // 端口在中止时自己回 `{ kind: "empty" }`；undefined 只是它没守约定（抛了）时的兜底。
-      return msgpack(reply ?? { kind: "empty" });
-    } catch (cause) {
-      return fault(c, cause, "取回复失败", 500);
+    const parsed = brainToHumanBody.safeParse(await readMsgpack(c.req.raw));
+    if (!parsed.success) {
+      return c.text("请求体要形如 { brain_id, skip_before? }（MessagePack）", 400);
     }
+
+    // 没有非流式的版本了：这个端点永远回分帧流。
+    return await frameResponse(
+      options.ports.brainToHuman(
+        { brain_id: parsed.data.brain_id, skip_before: parsed.data.skip_before ?? undefined },
+        { signal: c.req.raw.signal, waitMs: options.pollTimeoutMs },
+      ),
+      c.req.raw.signal,
+    );
   });
 
   // ── agent 那对：JSON / MessagePack 都收，响应跟着请求 ───────────────────
@@ -239,6 +258,80 @@ function json(value: unknown): Response {
 }
 
 /**
+ * 流式响应：一帧一个 MessagePack 对象，前面 4 字节大端长度。
+ *
+ * 不靠 MessagePack 自己定界——各语言的流式 unpacker 支持参差，而"读 4 字节、再读 N 字节"
+ * 谁都会写。读到一半没了 = 截断（客户端可以重发请求重新轮询）。
+ *
+ * **第一帧先取出来再回响应头**：这样"分句服务挂了 / 第一块 TTS 就失败"还能老老实实回 502，
+ * 而不是 200 + 空 body（那会被客户端当成"说完了"）。开流之后出错就只能断流、记日志。
+ */
+async function frameResponse(
+  chunks: AsyncIterable<{ text?: string; audio?: Uint8Array }>,
+  signal: AbortSignal,
+): Promise<Response> {
+  const iterator = chunks[Symbol.asyncIterator]();
+
+  let pending: IteratorResult<{ text?: string; audio?: Uint8Array }> | undefined;
+  try {
+    pending = await iterator.next();
+  } catch (cause) {
+    await iterator.return?.(undefined);
+    if (!signal.aborted) console.error("[stream] 第一帧就失败了", cause);
+    return new Response("取回复失败", {
+      status: 502,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
+  let wrote = false;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = pending ?? (await iterator.next());
+        pending = undefined;
+
+        if (next.done) {
+          // 一句话都没有（等到超时）：发一个 empty 帧收尾，语义和长轮询一致。
+          if (!wrote) controller.enqueue(frame({ kind: "empty" }));
+          controller.close();
+          return;
+        }
+
+        const payload: Record<string, unknown> = { kind: "text" };
+        if (next.value.text !== undefined) payload.text = next.value.text;
+        if (next.value.audio !== undefined) payload.audio = next.value.audio;
+
+        controller.enqueue(frame(payload));
+        wrote = true;
+      } catch (cause) {
+        // 客户端自己断开是常态，不是错误。
+        if (!signal.aborted) console.error("[stream] 流式回复中途失败", cause);
+        await iterator.return?.(undefined);
+        controller.close();
+      }
+    },
+    async cancel() {
+      await iterator.return?.(undefined);
+    },
+  });
+
+  return new Response(stream, {
+    headers: { "content-type": MSGPACK, "cache-control": "no-store" },
+  });
+}
+
+/** 一帧：`[u32 大端长度][MessagePack]`。 */
+function frame(value: unknown): Uint8Array<ArrayBuffer> {
+  const body = encode(value);
+  const out = new Uint8Array(4 + body.byteLength);
+  new DataView(out.buffer).setUint32(0, body.byteLength);
+  out.set(body, 4);
+  return out;
+}
+
+/**
  * 读一个 MessagePack 请求体。解不出来（不是 msgpack、空 body、截断）就交回 undefined，
  * 由调用点的 safeParse 判成 400——读请求体本身不是这个层要区分失败原因的地方。
  */
@@ -294,7 +387,7 @@ function voiceOf(c: Context): { voice?: string } {
 }
 
 /**
- * 两个长轮询端点的公共部分：把超时和客户端断开合成一个 signal 递进去，取件。
+ * `/brain-to-agent` 的长轮询：把超时和客户端断开合成一个 signal 递进去，取件。
  *
  * 超时/断开本该由端口自己归一成 `{ kind: "empty" }`（见 BrainPorts）。这里再兜一层：
  * 端口实现就算把 AbortError 抛出来（没守约定），也不该把一个正常的空轮询变成 5xx——
