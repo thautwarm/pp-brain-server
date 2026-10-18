@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="PP Brain：自托管的 Brain API 服务端。手机只采音放音，转写、对话、合成都在你自己的服务器上。">
+<title>PP Brain — 自托管的 Brain API 服务端</title>
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <a class="brand" href="./">PP Brain</a>
+  <span class="spacer"></span>
+  <a class="nav-link" href="./">概览</a>
+  <a class="nav-link" href="brain-api/">Brain API</a>
+  <a class="nav-link" href="https://github.com/thautwarm/pp-brain-server">GitHub</a>
+</nav>
+
+<main>
+
+<div class="hero">
+  <h1>PP Brain</h1>
+  <p class="tag">自托管的 Brain API 服务端，给 PP Friend 用。</p>
+  <p class="lede">手机端只采音放音；语音识别、对话、语音合成都由这个服务承担。agent 侧把它当一条纯文本通道——它既不知道、也不需要知道电话另一头是人类的声音。</p>
+</div>
+
+<h2>它是什么</h2>
+<div class="grid">
+  <div class="card"><h3>全双工</h3><p>人类侧一边持续轮询"有没有话说"，一边把语音送上去。两条路并行，互不阻塞。</p></div>
+  <div class="card"><h3>可打断</h3><p>用户开口就清空播放队列，没听完的部分通过 unheard_text 补回给 agent。</p></div>
+  <div class="card"><h3>流式合成</h3><p>回复分句后逐块调 TTS、合成一块吐一帧。第一帧通常一两秒内到，不等整条说完。</p></div>
+  <div class="card"><h3>状态全内存</h3><p>每个 brain_id 的历史和队列都在进程里。空闲 2 小时卸载，重启即清零。</p></div>
+  <div class="card"><h3>不跑模型</h3><p>转写、合成、对话都打外部 OpenAI 兼容端点；分句打 compose 内网的 wtpsplit。</p></div>
+  <div class="card"><h3>协议很小</h3><p>四个端点、MessagePack 编码、Bearer 鉴权。没有 SDK 要装。</p></div>
+</div>
+
+<h2>架构</h2>
+<p>四条通道，两个方向。进 brain 的是提交、立即返回；出 brain 的是长轮询、可以空手而归。</p>
+<pre><code>人类侧（手机）
+  ├─ POST /human-to-brain  ──▶  STT  ──▶  给 agent 的文本
+  └─ POST /brain-to-human  ◀──  TTS  ◀──  agent 的文本（逐句合成，帧流）
+
+agent 侧
+  ├─ POST /brain-to-agent  ◀──  转写、打断补充、校对告警
+  └─ POST /agent-to-brain  ──▶  进队列，等人来取
+
+上行：Ogg Opus 16 kHz      下行：Ogg Opus（采样率不保证，按解码器实际输出处理）</code></pre>
+
+<h2>端点一览</h2>
+<table>
+  <tr><th>端点</th><th>方向</th><th>语义</th><th>编码</th></tr>
+  <tr><td><code>POST /human-to-brain</code></td><td>人类 → brain</td><td>提交语音，阻塞至转写完成，返回文本</td><td>仅 MessagePack</td></tr>
+  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，帧流响应：第一帧带原始文本，后续帧只有音频</td><td>仅 MessagePack</td></tr>
+  <tr><td><code>POST /agent-to-brain</code></td><td>agent → brain</td><td>提交文本，立即返回，由服务端合成语音</td><td>MessagePack / JSON</td></tr>
+  <tr><td><code>POST /brain-to-agent</code></td><td>brain → agent</td><td>长轮询，取转写结果、打断补充、校对告警</td><td>MessagePack / JSON</td></tr>
+</table>
+<div class="note">
+  <code>/brain-to-human</code> 只有一种形态：<strong>帧流</strong>（<code>[u32 大端长度][MessagePack]</code> 重复）。
+  没有非流式的单对象版本，也没有 <code>final</code> 字段——body 正常结束就是说完了。
+  帧的读法、截断与超时语义见 <a href="brain-api/">Brain API 协议</a>。
+</div>
+
+<h2>快速开始</h2>
+<pre><code>cp .env.example .env       # 填端点、密钥、模型名，填完再起
+docker compose up -d --build
+docker compose logs -f brains</code></pre>
+<p>接口在 <code>localhost:18781</code>（宿主 18781 → 容器 8787）。鉴权走 <span class="pill">Authorization: Bearer</span>，token 留空就是不启用。</p>
+<p>最小环境变量集（完整清单见仓库的 <code>.env.example</code> 与 docs）：</p>
+<table>
+  <tr><th>变量</th><th>用途</th></tr>
+  <tr><td><code>STT_API_BASE_URL</code> / <code>STT_API_KEY</code></td><td>转写端点（OpenAI 兼容）</td></tr>
+  <tr><td><code>TTS_API_BASE_URL</code> / <code>TTS_API_KEY</code> / <code>TTS_VOICE</code></td><td>合成端点与默认音色（音色必填）</td></tr>
+  <tr><td><code>WTP_SPLIT_URL</code></td><td>分句服务，compose 内即 <code>http://wtpsplit:8000/split</code></td></tr>
+  <tr><td><code>MIGHT_CHAT_API_KEY</code> / <code>MIGHT_CHAT_API_BASE_URL</code></td><td>修订/摘要用的对话端点</td></tr>
+  <tr><td><code>MIGHT_BRAINS_TOKEN</code></td><td>路由鉴权；空 = 不启用</td></tr>
+</table>
+
+<h2>文档</h2>
+<p class="toc">
+  <a href="brain-api/">Brain API 协议（本站点）</a><br>
+  <a href="https://github.com/thautwarm/pp-brain-server/blob/main/docs/brain-api-spec.md">docs/brain-api-spec.md</a> —— 接口契约，唯一权威<br>
+  <a href="https://github.com/thautwarm/pp-brain-server/blob/main/docs/brains.md">docs/brains.md</a> —— 服务端怎么跑、配置、运行时行为、日志<br>
+  <a href="https://github.com/thautwarm/pp-brain-server/blob/main/docs/client-notes.md">docs/client-notes.md</a> —— 手机端实现笔记
+</p>
+
+</main>
+
+<footer>
+  PP Brain · <a href="https://github.com/thautwarm/pp-brain-server">GitHub</a> · <a href="brain-api/">Brain API 协议</a>
+</footer>
+
+</body>
+</html>

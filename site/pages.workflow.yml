@@ -1,0 +1,39 @@
+name: pages
+
+# 这是发布本站点的 GitHub Actions 工作流，但**故意没放在 .github/workflows/**：
+#
+# 1. 仓库是 private，这个账号的 GitHub Pages 不支持 private 仓库；
+# 2. 当前推送用的 OAuth token 没有 `workflow` scope，GitHub 会直接拒绝任何
+#    落在 .github/workflows/ 下的改动。
+#
+# 想发布时：
+#   gh auth refresh -s workflow
+#   mkdir -p .github/workflows && git mv site/pages.workflow.yml .github/workflows/pages.yml
+#   git commit -m "ci: publish the site" && git push
+#   再把仓库改成 public，并给 workflow 加回 push 触发。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

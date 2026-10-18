@@ -4,6 +4,9 @@ node_modules
 .gitignore
 tmp
 docs
+site
+.github
+services
 *.md
 
 # 密钥走运行时（compose 的 env_file / docker run -e），不烘进镜像。
