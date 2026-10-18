@@ -204,7 +204,7 @@ export function createBrainRouter(options: RouterOptions): Hono {
       return fault(c, cause, "取回复失败", 502);
     }
 
-    return speechResponse(reply);
+    return speechResponse(parsed.data.brain_id, reply);
   });
 
   // ── agent 那对：JSON / MessagePack 都收，响应跟着请求 ───────────────────
@@ -281,37 +281,56 @@ function speechPrelude(text: string, skipped: boolean): Uint8Array<ArrayBuffer> 
 }
 
 /** 前导 + Ogg 流拼成一个响应体；音频来一块转发一块。 */
-function speechResponse(reply: Awaited<ReturnType<BrainPorts["brainToHuman"]>>): Response {
+function speechResponse(
+  brainId: string,
+  reply: Awaited<ReturnType<BrainPorts["brainToHuman"]>>,
+): Response {
   const head =
     reply.kind === "empty" ? speechPrelude("", false) : speechPrelude(reply.text, reply.skipped);
 
-  let body: ReadableStream<Uint8Array> | Uint8Array<ArrayBuffer> = head;
-  if (reply.kind === "speech") {
-    const iterator = reply.audio[Symbol.asyncIterator]();
-    body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(head);
-      },
-      async pull(controller) {
-        try {
-          const next = await iterator.next();
-          if (next.done) {
-            controller.close();
-            return;
-          }
-          controller.enqueue(next.value);
-        } catch {
-          // 客户端断开、或 TTS 中途挂了：字节流到此为止（状态码早就发出去了）。
-          await iterator.return?.(undefined);
-          controller.close();
-        }
-      },
-      async cancel() {
-        await iterator.return?.(undefined);
-      },
-    });
+  if (reply.kind === "empty") {
+    console.log(`[b2h] ${briefId(brainId)} empty`);
+    return speechBody(head);
   }
 
+  const startedAt = Date.now();
+  let sent = head.length;
+  const iterator = reply.audio[Symbol.asyncIterator]();
+
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(head);
+    },
+    async pull(controller) {
+      try {
+        const next = await iterator.next();
+        if (next.done) {
+          console.log(
+            `[b2h] ${briefId(brainId)} ${reply.skipped ? "skipped" : "speech"} ${reply.text.length} 字 ${sent}B ${Date.now() - startedAt}ms`,
+          );
+          controller.close();
+          return;
+        }
+        sent += next.value.length;
+        controller.enqueue(next.value);
+      } catch {
+        // 客户端断开、或 TTS 中途挂了：字节流到此为止（状态码早就发出去了）。
+        console.log(`[b2h] ${briefId(brainId)} 中断 ${sent}B ${Date.now() - startedAt}ms`);
+        await iterator.return?.(undefined);
+        controller.close();
+      }
+    },
+    async cancel() {
+      console.log(`[b2h] ${briefId(brainId)} 客户端断开 ${sent}B ${Date.now() - startedAt}ms`);
+      await iterator.return?.(undefined);
+    },
+  });
+
+  return speechBody(body);
+}
+
+/** 前导 + （可选）音频流包成一个响应。 */
+function speechBody(body: ReadableStream<Uint8Array> | Uint8Array<ArrayBuffer>): Response {
   return new Response(body, {
     // 不是 audio/ogg：body 前面还有前导。x-accel-buffering 让反代别攒包。
     headers: {
@@ -320,6 +339,11 @@ function speechResponse(reply: Awaited<ReturnType<BrainPorts["brainToHuman"]>>):
       "x-accel-buffering": "no",
     },
   });
+}
+
+/** 日志里的 brain_id：截断 + 引号，防止伪造日志行。 */
+function briefId(brainId: string): string {
+  return JSON.stringify(brainId.length > 40 ? `${brainId.slice(0, 40)}…` : brainId);
 }
 
 /**

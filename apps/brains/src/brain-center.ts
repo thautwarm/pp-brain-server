@@ -299,6 +299,10 @@ export const Brains: BrainPorts = {
           return { kind: "speech", text: next.text, skipped: false, audio: noAudio() };
         }
 
+        console.log(
+          `[tts] ${brief(brainId)} voice=${JSON.stringify(voice)}${next.voice === undefined ? "（默认）" : ""} ${brief(spoken)}`,
+        );
+
         try {
           // 先打开 TTS（拿到响应头）再返回：打不开就还没往客户端发任何字节，
           // 路由会回 502，这条放回队列等下次。
@@ -319,6 +323,9 @@ export const Brains: BrainPorts = {
 
   async agentToBrain(req) {
     const brain = brainOf(req.brain_id);
+    console.log(
+      `[in] ${brief(req.brain_id)} agent voice=${req.voice === undefined ? "（用默认）" : JSON.stringify(req.voice)} ${brief(req.text)}`,
+    );
     SizedQueueOps.push(brain.history, { kind: "agent-text", text: req.text }, 64);
     SizedQueueOps.push(
       brain.inbounds.agent,
