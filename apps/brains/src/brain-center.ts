@@ -252,7 +252,10 @@ async function* speak(
       ({ audio } = await callVoiceGen(chunk.text, voice, { signal }));
     } catch (cause) {
       // 文本帧已经发出去了，放回会让客户端把文字看两遍；剩下的音频就断在这儿。
-      console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(chunk.text)}`, cause);
+      // 客户端自己断开的（signal 已中止）不算失败，别刷日志。
+      if (!signal.aborted) {
+        console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(chunk.text)}`, cause);
+      }
       return;
     }
 
@@ -357,6 +360,8 @@ export const Brains: BrainPorts = {
         const skipped = req.skip_before !== undefined && next.enqueuedAt < req.skip_before;
         yield* speak(brain, brainId, next, signal, skipped);
         if (!skipped) return;
+        // 手上就这么多了：别让客户端为"下一条"再干等 25 秒，直接结束这一轮。
+        if (brain.inbounds.agent.length === 0) return;
         continue;
       }
 
