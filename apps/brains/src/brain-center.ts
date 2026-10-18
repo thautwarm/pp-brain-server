@@ -1,11 +1,10 @@
 import { AudioHelper } from "@might/audio";
 import type { ApplicationMessage } from "@might/chat";
 import { Format, SizedQueueOps } from "./format.ts";
-import type { BrainFrame, BrainPorts } from "./http.ts";
+import type { BrainPorts } from "./http.ts";
 import { maybeCompression, reviseText } from "./revise.ts";
-import { type Split, splitForTts } from "./split.ts";
 import { callTranscript } from "./stt-tts.ts";
-import { streamVoice } from "./tts-stream.ts";
+import { openSpeech } from "./tts-stream.ts";
 
 type HistoryItem =
   | { kind: "human-audio"; audioB64: string }
@@ -159,26 +158,15 @@ function takeFromAgent(
   return item;
 }
 
-/**
- * 准备要念的文本：先过 `forTts`（`<!-- disable voice -->` 段不念），再交给分句服务装箱。
- *
- * 返回空 = 整段都不该念（调用点只发文本帧，不合成）。
- */
-async function chunkForTts(text: string, signal: AbortSignal): Promise<Split> {
-  const spoken = Format.forTts(text);
-  if (spoken.trim() === "") return { sentences: [], chunks: [] };
-  return splitForTts(spoken, signal);
-}
-
 type AgentItem = Brain["inbounds"]["agent"][number];
 
-/** 一条消息最多试几次分句（连续失败就不再挡着后面的消息）。 */
+/** 一条消息最多试几次打开 TTS（连续失败就不再挡着后面的消息）。 */
 const MAX_ATTEMPTS = 3;
 
 /**
  * 把没送出去的消息放回头部。
  *
- * **只有还没吐出第一帧时才能放回**——已经发了一半的再放回会让客户端把前半句听两遍。
+ * TTS 是在**往客户端写任何字节之前**打开的，所以这里失败整条放回是安全的。
  * 客户端自己断开的（`signal.aborted`）不算失败：这条还没送到，留着下次。
  */
 function requeue(brain: Brain, brainId: string, item: AgentItem, signal: AbortSignal): void {
@@ -189,111 +177,16 @@ function requeue(brain: Brain, brainId: string, item: AgentItem, signal: AbortSi
 
   item.attempts = (item.attempts ?? 0) + 1;
   if (item.attempts >= MAX_ATTEMPTS) {
-    console.error(
-      `[tts] ${brief(brainId)} 连续 ${item.attempts} 次分句失败，丢掉 ${brief(item.text)}`,
-    );
+    console.error(`[tts] ${brief(brainId)} 连续 ${item.attempts} 次失败，丢掉 ${brief(item.text)}`);
     return;
   }
   brain.inbounds.agent.unshift(item);
 }
 
-/**
- * 把一条消息念成帧。
- *
- * 第一帧**不带音频**：整条原始文本 + wtpsplit 的句子表（客户端立刻上屏、拿到句子表）。
- * `skipped` 是 true 时到此为止——客户端说这条已经跳过了，只要文本，不合成。
- * 之后每块一帧：这一块的文本 + 音频 + 已消费的句子数。
- */
-async function* speak(
-  brain: Brain,
-  brainId: string,
-  item: AgentItem,
-  signal: AbortSignal,
-  skipped: boolean,
-): AsyncGenerator<BrainFrame> {
-  // 被跳过的消息只要文本：不调分句服务，客户端本来也不用那些句子。
-  if (skipped) {
-    console.log(`[tts] ${brief(brainId)} 客户端 skip_before 跳过 ${brief(item.text)}`);
-    yield { kind: "text", text: item.text, sentences: [], skipped: true };
-    return;
-  }
-
-  let split: Split;
-  try {
-    split = await chunkForTts(item.text, signal);
-  } catch (cause) {
-    requeue(brain, brainId, item, signal);
-    throw cause; // 一帧都没发出去：交给路由变成 502
-  }
-
-  // 分句这段时间里客户端可能已经断了：那样这条还没送出去，放回去。
-  if (signal.aborted) {
-    requeue(brain, brainId, item, signal);
-    return;
-  }
-
-  // 第一帧：整条文本 + 句子表，没有音频。
-  yield { kind: "text", text: item.text, sentences: split.sentences, skipped: false };
-
-  if (split.chunks.length === 0) {
-    // 整条都被静音了：只有文本帧，不合成。
-    console.warn(`[tts] ${brief(brainId)} 整段都被静音了，只发文本 ${brief(item.text)}`);
-    return;
-  }
-
-  const voice = item.voice ?? process.env.TTS_VOICE;
-  if (voice === undefined || voice === "") {
-    console.warn(`[tts] ${brief(brainId)} 没有音色可用，只发文本 ${brief(item.text)}`);
-    return;
-  }
-
-  let consumed = 0;
-  for (const chunk of split.chunks) {
-    if (signal.aborted) return; // 客户端断了：剩下的不合成
-
-    try {
-      // 一块的音频可能分好几帧到。留一帧的提前量：收到下一帧（或流结束）才知道手里这帧
-      // 是不是这一块的最后一块——只有最后一块才把这一块的句数记进去。
-      let pending: { audio: Uint8Array; format: string } | undefined;
-      for await (const piece of streamVoice(chunk.text, voice, { signal })) {
-        if (signal.aborted) return;
-        if (pending !== undefined) {
-          yield {
-            kind: "text",
-            text: chunk.text,
-            audio: await asOgg(pending),
-            consumed_sentences: consumed,
-          };
-        }
-        pending = piece;
-      }
-      if (pending !== undefined) {
-        consumed += chunk.sentences;
-        yield {
-          kind: "text",
-          text: chunk.text,
-          audio: await asOgg(pending),
-          consumed_sentences: consumed,
-        };
-      }
-    } catch (cause) {
-      // 文本帧已经发出去了，放回会让客户端把文字看两遍；剩下的音频就断在这儿。
-      // 客户端自己断开的（signal 已中止）不算失败，别刷日志。
-      if (signal.aborted) return;
-      console.error(`[tts] ${brief(brainId)} 合成失败 ${brief(chunk.text)}`, cause);
-      // 明确告诉客户端"这条到这儿断了"，别让它把 200 + body 结束当成说完了。
-      yield { kind: "failed", consumed_sentences: consumed };
-      return;
-    }
-  }
-}
-
-/** 协议要求下行是 Ogg Opus；daemon 给了别的格式就在本地转一次（每块都是自包含的）。 */
-async function asOgg(piece: { audio: Uint8Array; format: string }): Promise<Uint8Array> {
-  const [a, b, c, d] = piece.audio;
-  const isOgg = a === 0x4f && b === 0x67 && c === 0x67 && d === 0x53; // "OggS"
-  if (isOgg) return piece.audio;
-  return AudioHelper.convertToOggOpus(piece.audio, undefined, { sampleRate: 24_000 });
+/** 没有音轨的回复（整条静音、被客户端跳过）。 */
+// biome-ignore lint/correctness/useYield: 就是故意什么都不产出
+async function* noAudio(): AsyncGenerator<Uint8Array> {
+  return;
 }
 
 /** 日志里只留前 60 个字：转录可能很长，别把整段刷进日志。 */
@@ -378,7 +271,7 @@ export const Brains: BrainPorts = {
     return { kind: "text", text: result.text };
   },
 
-  async *brainToHuman(req, { signal, waitMs }) {
+  async brainToHuman(req, { signal, waitMs }) {
     const brain = brainOf(req.brain_id);
     const brainId = req.brain_id;
     const deadline = Date.now() + waitMs;
@@ -387,18 +280,41 @@ export const Brains: BrainPorts = {
       // **原子取走**：两个并发请求不能拿到同一条；失败再放回头部（见 `requeue`）。
       const next = brain.inbounds.agent.shift();
       if (next !== undefined) {
-        // 客户端说这条太旧了：只回文本帧并标 `skipped`，让它自己决定怎么处理。
-        // 不合成，也不静默丢掉——它可能正靠这段算"哪些我没听到"。
-        const skipped = req.skip_before !== undefined && next.enqueuedAt < req.skip_before;
-        yield* speak(brain, brainId, next, signal, skipped);
-        // 一条响应只装一条消息：跳过的旧消息各占一条响应，客户端重发来排空；
-        // 真回复也永远单独占一条响应（"首帧"这个概念才立得住）。
-        return;
+        // 客户端说这条太旧了：只回文本并标 skipped，让它自己决定怎么处理。
+        if (req.skip_before !== undefined && next.enqueuedAt < req.skip_before) {
+          console.log(`[tts] ${brief(brainId)} 客户端 skip_before 跳过 ${brief(next.text)}`);
+          return { kind: "speech", text: next.text, skipped: true, audio: noAudio() };
+        }
+
+        // 念的是 forTts 过的那份（`<!-- disable voice -->` 段不念），回给客户端的是原文。
+        const spoken = Format.forTts(next.text);
+        if (spoken.trim() === "") {
+          console.warn(`[tts] ${brief(brainId)} 整段都被静音了，只发文本 ${brief(next.text)}`);
+          return { kind: "speech", text: next.text, skipped: false, audio: noAudio() };
+        }
+
+        const voice = next.voice ?? process.env.TTS_VOICE;
+        if (voice === undefined || voice === "") {
+          console.warn(`[tts] ${brief(brainId)} 没有音色可用，只发文本 ${brief(next.text)}`);
+          return { kind: "speech", text: next.text, skipped: false, audio: noAudio() };
+        }
+
+        try {
+          // 先打开 TTS（拿到响应头）再返回：打不开就还没往客户端发任何字节，
+          // 路由会回 502，这条放回队列等下次。
+          const audio = await openSpeech(spoken, voice, { signal });
+          return { kind: "speech", text: next.text, skipped: false, audio };
+        } catch (cause) {
+          requeue(brain, brainId, next, signal);
+          throw cause;
+        }
       }
 
-      if (Date.now() >= deadline) return; // 等到超时：路由会发一个 empty 帧
+      if (Date.now() >= deadline) return { kind: "empty" };
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+
+    return { kind: "empty" };
   },
 
   async agentToBrain(req) {

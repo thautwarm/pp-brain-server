@@ -29,9 +29,9 @@
 <div class="grid">
   <div class="card"><h3>全双工</h3><p>人类侧一边持续轮询"有没有话说"，一边把语音送上去。两条路并行，互不阻塞。</p></div>
   <div class="card"><h3>可打断</h3><p>用户开口就清空播放队列，没听完的部分通过 unheard_text 补回给 agent。</p></div>
-  <div class="card"><h3>流式合成</h3><p>回复分句后逐块调 TTS、合成一块吐一帧。第一帧通常一两秒内到，不等整条说完。</p></div>
+  <div class="card"><h3>流式合成</h3><p>整条回复交给流式 TTS，音频边生成边转发，不等整条合成完。</p></div>
   <div class="card"><h3>状态全内存</h3><p>每个 brain_id 的历史和队列都在进程里。空闲 2 小时卸载，重启即清零。</p></div>
-  <div class="card"><h3>不跑模型</h3><p>转写、合成、对话都打外部 OpenAI 兼容端点；分句打 compose 内网的 wtpsplit。</p></div>
+  <div class="card"><h3>不跑模型</h3><p>转写、合成、对话都打外部端点，地址由 <code>.env</code> 给。</p></div>
   <div class="card"><h3>协议很小</h3><p>四个端点、MessagePack 编码、Bearer 鉴权。没有 SDK 要装。</p></div>
 </div>
 
@@ -39,7 +39,7 @@
 <p>四条通道，两个方向。进 brain 的是提交、立即返回；出 brain 的是长轮询、可以空手而归。</p>
 <pre><code>人类侧（手机）
   ├─ POST /human-to-brain  ──▶  STT  ──▶  给 agent 的文本
-  └─ POST /brain-to-human  ◀──  TTS  ◀──  agent 的文本（逐句合成，帧流）
+  └─ POST /brain-to-human  ◀──  TTS  ◀──  agent 的文本（流式合成）
 
 agent 侧
   ├─ POST /brain-to-agent  ◀──  转写、打断补充、校对告警
@@ -51,14 +51,15 @@ agent 侧
 <table>
   <tr><th>端点</th><th>方向</th><th>语义</th><th>编码</th></tr>
   <tr><td><code>POST /human-to-brain</code></td><td>人类 → brain</td><td>提交语音，阻塞至转写完成，返回文本</td><td>仅 MessagePack</td></tr>
-  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，帧流响应：先来一帧文本 + 句子表，之后每帧一块音频</td><td>仅 MessagePack</td></tr>
+  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，前导 + Ogg 流：文本一次到齐，音频连续</td><td>仅 MessagePack</td></tr>
   <tr><td><code>POST /agent-to-brain</code></td><td>agent → brain</td><td>提交文本，立即返回，由服务端合成语音</td><td>MessagePack / JSON</td></tr>
   <tr><td><code>POST /brain-to-agent</code></td><td>brain → agent</td><td>长轮询，取转写结果、打断补充、校对告警</td><td>MessagePack / JSON</td></tr>
 </table>
 <div class="note">
-  <code>/brain-to-human</code> 只有一种形态：<strong>帧流</strong>（<code>[u32 大端长度][MessagePack]</code> 重复）。
-  没有非流式的单对象版本，也没有 <code>final</code> 字段——body 正常结束就是说完了。
-  帧的读法、截断与超时语义见 <a href="brain-api/">Brain API 协议</a>。
+  <code>/brain-to-human</code> 的响应是 <code>application/octet-stream</code>：
+  <code>[u32 大端 文本长度][UTF-8 文本][1 字节 flags][Ogg Opus 流]</code>。
+  文本一次到齐，音频是连续流；<code>flags</code> 的 bit0 表示这条是 <code>skip_before</code> 跳过的旧消息。
+  细节见 <a href="brain-api/">Brain API 协议</a>。
 </div>
 
 <h2>快速开始</h2>
@@ -71,8 +72,7 @@ docker compose logs -f brains</code></pre>
   <tr><th>变量</th><th>用途</th></tr>
   <tr><td><code>STT_API_BASE_URL</code> / <code>STT_API_KEY</code></td><td>转写端点（OpenAI 兼容）</td></tr>
   <tr><td><code>TTS_API_BASE_URL</code> / <code>TTS_API_KEY</code> / <code>TTS_VOICE</code></td><td>合成端点与默认音色（音色必填）</td></tr>
-  <tr><td><code>WTP_SPLIT_URL</code></td><td>分句服务，compose 内即 <code>http://wtpsplit:8000/split</code></td></tr>
-  <tr><td><code>MIGHT_CHAT_API_KEY</code> / <code>MIGHT_CHAT_API_BASE_URL</code></td><td>修订/摘要用的对话端点</td></tr>
+    <tr><td><code>MIGHT_CHAT_API_KEY</code> / <code>MIGHT_CHAT_API_BASE_URL</code></td><td>修订/摘要用的对话端点</td></tr>
   <tr><td><code>MIGHT_BRAINS_TOKEN</code></td><td>路由鉴权；空 = 不启用</td></tr>
 </table>
 

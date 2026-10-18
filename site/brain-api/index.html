@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Brain API 协议：四个端点、MessagePack 编码、分帧流响应与正文约定。">
+<meta name="description" content="Brain API 协议：四个端点、MessagePack 编码、语音响应与正文约定。">
 <title>Brain API 协议 — PP Brain</title>
 <link rel="stylesheet" href="../assets/site.css">
 </head>
@@ -31,7 +31,7 @@
   <tr><td>方法</td><td>四个端点一律 <code>POST</code>，无查询参数</td></tr>
   <tr><td>鉴权</td><td><code>Authorization: Bearer &lt;token&gt;</code>，四个端点都要求（流式同理）。服务端 token 为空字符串表示不启用鉴权，此时客户端不发送这个头</td></tr>
   <tr><td>请求体编码</td><td><code>application/msgpack</code> 或 <code>application/json</code>，各端点支持范围见下表</td></tr>
-  <tr><td>成功响应编码</td><td>与请求体编码相同；<code>/brain-to-human</code> 恒为 MessagePack 帧流</td></tr>
+  <tr><td>成功响应编码</td><td>与请求体编码相同；<code>/brain-to-human</code> 恒为 <code>application/octet-stream</code>（前导 + Ogg 流）</td></tr>
   <tr><td>失败响应</td><td>非 2xx + <code>Content-Type: text/plain</code>，正文为一句人类可读的原因</td></tr>
   <tr><td>音色</td><td>可选请求头 <code>x-brain-voice</code>（旧名 <code>x-might-voice</code> 也认）。两个提交端点都接受，只有 <code>/agent-to-brain</code> 上的会影响合成，且只作用于那一条消息</td></tr>
 </table>
@@ -44,7 +44,7 @@
 <table>
   <tr><th>端点</th><th>方向</th><th>语义</th><th>请求编码</th><th>响应编码</th></tr>
   <tr><td><code>POST /human-to-brain</code></td><td>人类 → brain</td><td>提交，等待转写</td><td>仅 MessagePack</td><td>MessagePack</td></tr>
-  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，分帧流</td><td>仅 MessagePack</td><td>MessagePack 帧流</td></tr>
+  <tr><td><code>POST /brain-to-human</code></td><td>brain → 人类</td><td>长轮询，前导 + Ogg 流</td><td>仅 MessagePack</td><td><code>application/octet-stream</code></td></tr>
   <tr><td><code>POST /agent-to-brain</code></td><td>agent → brain</td><td>提交，立即返回</td><td>MessagePack / JSON</td><td>同请求编码</td></tr>
   <tr><td><code>POST /brain-to-agent</code></td><td>brain → agent</td><td>长轮询</td><td>MessagePack / JSON</td><td>同请求编码</td></tr>
 </table>
@@ -64,32 +64,23 @@
 <p>返回的 <code>text</code> 是转写结果；它的文本形态同时进入给 agent 的流。转写超时或上游失败返回 <code>502</code>。</p>
 
 <h2><code>POST /brain-to-human</code></h2>
-<p>长轮询，取 brain 对人类的回复。<strong>响应是分帧流</strong>：一条回复拆成若干帧，合成出一段就吐一段。</p>
+<p>长轮询，取 brain 对人类的回复。<strong>响应体是「前导 + 一段 Ogg Opus 流」</strong>。</p>
 <pre><code>// 请求（MessagePack）
 { brain_id: string, skip_before?: number }
 
-// 响应（MessagePack 帧流）
-[u32 大端长度][MessagePack]   ← 一帧，重复 N 次
-
-// 每帧：
-{ kind: "text", text: string, sentences: string[], skipped: boolean }           // 每条消息的第一帧
-{ kind: "text", text: string, audio: Uint8Array, consumed_sentences: number }   // 音频帧
-{ kind: "failed", consumed_sentences: number }                                  // 合成中途失败
-{ kind: "empty" }                                                               // 等到超时、没有内容</code></pre>
+// 响应 200，Content-Type: application/octet-stream
+[u32 大端 文本长度][UTF-8 文本][1 字节 flags][Ogg Opus 流…]</code></pre>
 <ul>
-  <li><strong>第一帧不带音频</strong>：<code>text</code> 是整条原始文本（<code>&lt;!-- disable voice --&gt;</code> 段照原样保留），<code>sentences</code> 是 wtpsplit 的句子表（它的 join 不一定等于 <code>text</code>）。客户端可以先上屏。</li>
-  <li><strong>之后每帧</strong>是"这一块念的文本 + 音频 + 累计消费的句子数"。被打断时用 <code>consumed_sentences</code> 算还剩几句没听到。</li>
-  <li><code>skipped: true</code>：客户端 <code>skip_before</code> 跳过的旧消息，只有文本帧、没有音频，<code>sentences</code> 为空数组。一条响应里<strong>最多一条</strong> skipped 帧，发完即结束 body；收到就重发，直到拿到真正的回复。</li>
-  <li><code>{ kind: "failed", consumed_sentences }</code>：合成挂了，可能发生在任意一块——包括第一块（此时 <code>consumed_sentences: 0</code>，一个音频帧都没有）。正常说完不会有这一帧；分句失败是 <code>502</code>，客户端断开也不发。</li>
-  <li>整条都被静音时只有第一帧，没有音频帧。</li>
-  <li><code>audio</code> 是 Ogg Opus，<strong>每帧是一个独立的文件</strong>：按帧解码，把 PCM 追加到播放队列，不要字节拼接。</li>
-  <li><code>skip_before</code>（可选，UTC epoch <strong>毫秒</strong>，客户端的钟）：早于这个时刻入队的 agent 消息<strong>不合成、不丢弃</strong>，而是以 <code>skipped: true</code> 的文本帧回给客户端，由它决定显示、忽略还是记进 <code>unheard_text</code>。</li>
-  <li>客户端断开，服务端立即停止后续合成；已经取走的这条消息不会重投。</li>
+  <li><code>文本长度 = 0</code>：这一轮没有内容，后面既没文本也没音频，客户端立刻重发。</li>
+  <li><code>flags</code> 只有 bit0 有定义：<code>1</code> = 这条是 <code>skip_before</code> 跳过的旧消息，<strong>body 里没有音频</strong>；其余位保留，必须为 0。</li>
+  <li>文本是这条回复的<strong>原始文本</strong>（<code>&lt;!-- disable voice --&gt;</code> 段原样保留，那些段只是不产生音频）。</li>
+  <li>音频是<strong>一条连续的 Ogg Opus 流</strong>，直接喂解码器，不要按块拼。</li>
+  <li><strong>没有结束标记</strong>：body 正常结束 = 说完了。TTS 中途挂掉也是 body 结束，客户端不区分二者（想区分只能靠 Ogg EOS）。</li>
+  <li>等不到内容时挂到长轮询上限，然后回 <code>文本长度 = 0</code>。</li>
+  <li>客户端断开，服务端立即停掉合成；已经取走的这条消息不会重投。</li>
+  <li><code>skip_before</code>（可选，UTC epoch <strong>毫秒</strong>，客户端的钟）：早于这个时刻入队的 agent 消息不合成，只回文本并置 flags 的 bit0。一条响应最多一条消息，客户端重发来逐条排空。</li>
+  <li>出声之前就失败（音色不存在、TTS 连不上、返回的不是 Ogg）→ <code>502</code>，这条消息放回队列，下一次轮询还能拿到。</li>
 </ul>
-<div class="note">
-  <strong>没有 <code>final</code> 字段。</strong>body 正常结束 = 说完了。怎么切块不在协议里：客户端只该假设
-  "第一帧的文本是整条回复，音频按序拼起来就是整条语音"。
-</div>
 
 <h2><code>POST /agent-to-brain</code></h2>
 <p>agent 提交一段文本。该文本会被合成语音并经 <code>/brain-to-human</code> 交付给人类。</p>
@@ -116,20 +107,16 @@
   <tr><td>服务端校对告警</td><td><code>&lt;asr-warning&gt;…&lt;/asr-warning&gt;</code></td></tr>
 </table>
 
-<h2>帧流细节</h2>
-<p><code>/brain-to-human</code> 的响应<strong>永远</strong>是一串帧，没有"单个 MessagePack"的形态：</p>
-<pre><code>while (true) {
-  read 4 bytes -&gt; length (big-endian u32)
-  read length bytes -&gt; MessagePack
-  if (kind == "empty") break        // 超时，没有内容，立刻重发
-  if (frame.audio) enqueue(frame.audio)   // 每帧是独立的 Ogg 文件，各自解码
-}
-// body 正常结束 = 这一条说完了</code></pre>
+<h2>语音响应怎么解</h2>
+<pre><code>read 4 bytes -&gt; textLen (big-endian u32)
+read textLen bytes -&gt; UTF-8 文本        // textLen == 0：这一轮没内容，直接重发
+read 1 byte -&gt; flags                     // bit0 = 1：被跳过的旧消息，没有音频
+// 剩下的字节全是 Ogg Opus，边到边喂解码器</code></pre>
 <ul>
-  <li><strong>读法</strong>：不靠 MessagePack 自己定界——各语言的流式 unpacker 支持参差，而"读 4 字节、再读 N 字节"谁都会写。</li>
-  <li><strong>截断</strong>：读不到完整的一帧（连接中断、长度越界）= 这条丢了。客户端重新发起请求即可，服务端不会重投。</li>
-  <li><strong>超时语义</strong>：超时只约束<strong>等第一帧</strong>（默认 25 秒）。开始吐帧之后，这条连接可以一直挂到说完。一帧都没有就发一帧 <code>{ kind: "empty" }</code> 收尾。</li>
-  <li>首帧（只有文本和句子表）几乎立刻到；第一块音频通常在一两秒内跟上，不需要等整条合成完就开始播。</li>
+  <li><strong>文本先到</strong>：前导在音频之前发出去，所以文字可以立刻上屏。</li>
+  <li><strong>音频是流</strong>：不要按固定块长切，也不要把两块拼成一个 Ogg 文件——它就是一条流。</li>
+  <li><strong>截断</strong>：连接中途断了就是这条丢了，重新发请求即可，服务端不会重投。</li>
+  <li><strong>超时语义</strong>：超时只约束<strong>等到有内容</strong>（默认 25 秒）。开始出声之后，这条连接可以一直挂到说完。</li>
 </ul>
 
 <h2><code>brain_id</code></h2>
@@ -158,7 +145,7 @@
 <ul>
   <li>两个标记之间的内容（含标记本身）不进入语音合成；<code>text</code> 本身不受影响，人类侧仍显示完整文本。</li>
   <li>一条 <code>text</code> 内可出现多组。标记不成对时，开区间自标记处延续至文本末尾。</li>
-  <li>整段均处于禁用状态时，该条不产生语音：<code>/brain-to-human</code> 里只会有一帧 <code>{ kind: "text", text }</code>。</li>
+  <li>整段均处于禁用状态时，该条不产生语音：<code>/brain-to-human</code> 的响应只有前导和文本，没有音频。</li>
 </ul>
 
 <h2>音频</h2>
@@ -176,7 +163,7 @@
 <h2>投递语义</h2>
 <ul>
   <li><code>/brain-to-human</code> 与 <code>/brain-to-agent</code> 为长轮询。收到 <code>{ "kind": "empty" }</code> 表示当前无内容，客户端应立即重新发起请求，不得等待或退避。</li>
-  <li>消息<strong>读即消费</strong>：服务端取出后即从队列移除，无确认、无重投。响应未能送达客户端即视为该条丢失；回复中断时同理，已发出的帧算送达。</li>
+  <li>消息<strong>读即消费</strong>：服务端取出后即从队列移除，无确认、无重投。响应未能送达客户端即视为该条丢失；回复中断时同理，已经发出的字节算送达。</li>
   <li>队列有上限（当前两个方向各 64 条）。达到上限时丢弃<strong>最旧</strong>的一条。</li>
   <li>每个 <code>brain_id</code> 的每个出向队列只应由<strong>一个</strong>消费者轮询。多个消费者会各自取走一部分消息。</li>
   <li>失败一律通过 HTTP 状态码表达。协议层不定义错误消息体，也不存在表示错误的 <code>kind</code>。<code>401</code> 不应重试。</li>
@@ -187,7 +174,7 @@
   <tr><th>项</th><th>当前值</th><th>说明</th></tr>
   <tr><td><code>/human-to-brain</code></td><td>13 s</td><td>转写上限，超时返回 <code>502</code></td></tr>
   <tr><td><code>/brain-to-agent</code></td><td>25 s</td><td>长轮询上限，超时返回 <code>empty</code></td></tr>
-  <tr><td><code>/brain-to-human</code></td><td>25 s</td><td><strong>只约束等第一帧</strong>；开始吐帧后可以挂到说完</td></tr>
+  <tr><td><code>/brain-to-human</code></td><td>25 s</td><td><strong>只约束等到有内容</strong>；开始出声后可以挂到说完</td></tr>
 </table>
 <p>上述值为服务端默认，可配置（<code>MIGHT_BRAINS_POLL_TIMEOUT_MS</code>）。客户端应把长轮询上限视为"服务端可能长时间不返回"。</p>
 
@@ -198,7 +185,7 @@
   <tr><td><code>400</code></td><td>请求体形状或编码不合法</td></tr>
   <tr><td><code>401</code></td><td>鉴权失败</td></tr>
   <tr><td><code>500</code></td><td>服务端内部失败</td></tr>
-  <tr><td><code>502</code></td><td>上游失败（转写 / 分句 / 合成）</td></tr>
+  <tr><td><code>502</code></td><td>上游失败（转写 / 合成）</td></tr>
 </table>
 <p>错误体一律 <code>text/plain</code>，绝不能长得像那个端点的成功响应——否则会被客户端当成一条合法回复去解。</p>
 

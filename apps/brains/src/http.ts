@@ -53,32 +53,6 @@ const JSON_TYPE = "application/json";
  *
  * 收的是**请求体**、回的是**响应体**（长轮询的两种返回就是那两个 body）。
  */
-/**
- * `/brain-to-human` 帧流里的一帧（不含 `empty`——那是路由在"一句话都没有"时补的）。
- *
- * - 第一帧：整条原始文本 + 句子表，**没有音频**；`skipped` 表示这条是被客户端跳过的回填。
- * - 音频帧：这一块念的文本 + 音频 + 累计消费的句子数。
- * - `failed`：合成中途挂了，这一条到此为止（客户端据此区别于"正常说完"）。
- */
-export type BrainFrame =
-  | {
-      kind: "text";
-      /** 这条回复的**原始**文本（含 `<!-- disable voice -->` 段，原样）。 */
-      text: string;
-      /** wtpsplit 的句子表；跳过帧为空数组。它的 join 不一定等于 `text`。 */
-      sentences: string[];
-      skipped: boolean;
-    }
-  | {
-      kind: "text";
-      /** 这一块念的文本（客户端用它算"跳过/没听到"了什么）。 */
-      text: string;
-      audio: Uint8Array;
-      /** 包括这一块在内，已经消费了多少句（累加）。 */
-      consumed_sentences: number;
-    }
-  | { kind: "failed"; consumed_sentences: number };
-
 export interface BrainPorts {
   /**
    * `human-to-brain`：一段人类语音进，转录文本出——它就是响应体。
@@ -98,22 +72,31 @@ export interface BrainPorts {
   ): Promise<{ kind: "text"; text: string }>;
 
   /**
-   * `brain-to-human`：取 agent 要说的下一句。
+   * `brain-to-human`：取 agent 要说的下一句，以及它的语音。
    *
-   * **响应永远是分帧流**（见 `frameResponse`）：一帧一段文本 + 它的音频，合成一段就吐一帧，
-   * 不等整条回复。`waitMs` 只管**等到有内容为止**——一旦开始吐帧，这条连接可以挂到说完
-   * （几十秒）；断连由 `signal` 传进来，实现要立刻停手。
+   * 等不到内容（`waitMs` 用完）返回 `{ kind: "empty" }`；否则返回这一条文本 + 一个 Ogg 字节流
+   * （可能为空：整条被静音、或被客户端跳过）。断连由 `signal` 传进来，实现要立刻停手。
    *
-   * 一帧都没有 = 超时（路由发一个 `{ kind: "empty" }` 帧收尾）。
+   * 合成在**返回之前**就打开：打不开（音色不存在、TTS 挂了）就抛，路由回 `502`，消息放回队列。
    */
   brainToHuman(
     /**
-     * `skip_before`（可选，UTC epoch 毫秒，**客户端的钟**）：早于这个时刻入队的 agent 消息直接
-     * 丢掉——客户端不耐烦、跳过了积压的几条时用。语义见规格 §3.2。
+     * `skip_before`（可选，UTC epoch 毫秒，**客户端的钟**）：早于这个时刻入队的 agent 消息
+     * 不算语音，只回文本并标 `skipped`（语义见规格 §3.2）。
      */
     request: { brain_id: string; skip_before?: number },
     options: { signal: AbortSignal; waitMs: number },
-  ): AsyncIterable<BrainFrame>;
+  ): Promise<
+    | { kind: "empty" }
+    | {
+        kind: "speech";
+        /** 这条回复的**原始**文本（`<!-- disable voice -->` 段原样保留）。 */
+        text: string;
+        /** 客户端用 `skip_before` 跳过的旧消息：只回文本，没有音频。 */
+        skipped: boolean;
+        audio: AsyncIterable<Uint8Array>;
+      }
+  >;
 
   /**
    * `agent-to-brain`：agent 把一段文本交给 brain。
@@ -146,7 +129,7 @@ export interface RouterOptions {
   readonly ports: BrainPorts;
   /** 期望的 Bearer token。**空字符串 = 这个部署不启用鉴权**（规格 §0.2）。 */
   readonly token: string;
-  /** 长轮询等多久：`/brain-to-agent` 等到有内容；`/brain-to-human` 只等到第一帧。 */
+  /** 长轮询等多久（`/brain-to-human` 只等到有内容；之后音频是流式的）。 */
   readonly pollTimeoutMs: number;
 }
 
@@ -210,14 +193,18 @@ export function createBrainRouter(options: RouterOptions): Hono {
       return c.text("请求体要形如 { brain_id, skip_before? }（MessagePack）", 400);
     }
 
-    // 没有非流式的版本了：这个端点永远回分帧流。
-    return await frameResponse(
-      options.ports.brainToHuman(
+    let reply: Awaited<ReturnType<BrainPorts["brainToHuman"]>>;
+    try {
+      reply = await options.ports.brainToHuman(
         { brain_id: parsed.data.brain_id, skip_before: parsed.data.skip_before ?? undefined },
         { signal: c.req.raw.signal, waitMs: options.pollTimeoutMs },
-      ),
-      c.req.raw.signal,
-    );
+      );
+    } catch (cause) {
+      // 还没往客户端发任何字节：消息在端口里已经放回队列，这里只报错。
+      return fault(c, cause, "取回复失败", 502);
+    }
+
+    return speechResponse(reply);
   });
 
   // ── agent 那对：JSON / MessagePack 都收，响应跟着请求 ───────────────────
@@ -279,79 +266,60 @@ function json(value: unknown): Response {
 }
 
 /**
- * 流式响应：一帧一个 MessagePack 对象，前面 4 字节大端长度。
+ * 语音响应的前导：`[u32 大端 文本长度][UTF-8 文本][1 字节标志]`，后面直接跟 Ogg Opus。
  *
- * 不靠 MessagePack 自己定界——各语言的流式 unpacker 支持参差，而"读 4 字节、再读 N 字节"
- * 谁都会写。读到一半没了 = 截断（客户端可以重发请求重新轮询）。
- *
- * **第一帧先取出来再回响应头**：这样"分句服务挂了 / 第一块 TTS 就失败"还能老老实实回 502，
- * 而不是 200 + 空 body（那会被客户端当成"说完了"）。开流之后出错就只能断流、记日志。
+ * 标志只有最低位有定义：`1` = 这条被客户端 `skip_before` 跳过（body 里不会有音频）。
+ * 文本长度为 0 = 这一轮没有内容（客户端立刻重发）。
  */
-async function frameResponse(
-  chunks: AsyncIterable<BrainFrame>,
-  signal: AbortSignal,
-): Promise<Response> {
-  const iterator = chunks[Symbol.asyncIterator]();
+function speechPrelude(text: string, skipped: boolean): Uint8Array<ArrayBuffer> {
+  const bytes = new TextEncoder().encode(text);
+  const out = new Uint8Array(4 + bytes.length + 1);
+  new DataView(out.buffer).setUint32(0, bytes.length);
+  out.set(bytes, 4);
+  out[4 + bytes.length] = skipped ? 1 : 0;
+  return out;
+}
 
-  let pending: IteratorResult<BrainFrame> | undefined;
-  try {
-    pending = await iterator.next();
-  } catch (cause) {
-    await iterator.return?.(undefined);
-    if (!signal.aborted) console.error("[stream] 第一帧就失败了", cause);
-    return new Response("取回复失败", {
-      status: 502,
-      headers: { "content-type": "text/plain" },
+/** 前导 + Ogg 流拼成一个响应体；音频来一块转发一块。 */
+function speechResponse(reply: Awaited<ReturnType<BrainPorts["brainToHuman"]>>): Response {
+  const head =
+    reply.kind === "empty" ? speechPrelude("", false) : speechPrelude(reply.text, reply.skipped);
+
+  let body: ReadableStream<Uint8Array> | Uint8Array<ArrayBuffer> = head;
+  if (reply.kind === "speech") {
+    const iterator = reply.audio[Symbol.asyncIterator]();
+    body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(head);
+      },
+      async pull(controller) {
+        try {
+          const next = await iterator.next();
+          if (next.done) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(next.value);
+        } catch {
+          // 客户端断开、或 TTS 中途挂了：字节流到此为止（状态码早就发出去了）。
+          await iterator.return?.(undefined);
+          controller.close();
+        }
+      },
+      async cancel() {
+        await iterator.return?.(undefined);
+      },
     });
   }
 
-  let wrote = false;
-
-  const stream = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const next = pending ?? (await iterator.next());
-        pending = undefined;
-
-        if (next.done) {
-          // 一句话都没有（等到超时）：发一个 empty 帧收尾，语义和长轮询一致。
-          if (!wrote) controller.enqueue(frame({ kind: "empty" }));
-          controller.close();
-          return;
-        }
-
-        controller.enqueue(frame(next.value));
-        wrote = true;
-      } catch (cause) {
-        // 客户端自己断开是常态，不是错误。
-        if (!signal.aborted) console.error("[stream] 流式回复中途失败", cause);
-        await iterator.return?.(undefined);
-        controller.close();
-      }
-    },
-    async cancel() {
-      await iterator.return?.(undefined);
-    },
-  });
-
-  return new Response(stream, {
-    // x-accel-buffering 是给 nginx 一类反代看的：不关掉它，分帧会被攒成一整块，
-    // 首帧延迟就白优化了。其他代理不认也无害。
+  return new Response(body, {
+    // 不是 audio/ogg：body 前面还有前导。x-accel-buffering 让反代别攒包。
     headers: {
-      "content-type": MSGPACK,
+      "content-type": "application/octet-stream",
       "cache-control": "no-store",
       "x-accel-buffering": "no",
     },
   });
-}
-
-/** 一帧：`[u32 大端长度][MessagePack]`。 */
-function frame(value: unknown): Uint8Array<ArrayBuffer> {
-  const body = encode(value);
-  const out = new Uint8Array(4 + body.byteLength);
-  new DataView(out.buffer).setUint32(0, body.byteLength);
-  out.set(body, 4);
-  return out;
 }
 
 /**

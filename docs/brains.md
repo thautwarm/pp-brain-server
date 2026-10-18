@@ -1,8 +1,7 @@
 # brains
 
 `apps/brains` —— Brain API 的服务端（接口契约见 [brain-api-spec.md](./brain-api-spec.md)）。
-它自己不跑模型：转写、合成、对话打外部端点（地址由 `.env` 给），分句打 compose 内网的
-`wtpsplit`。
+它自己不跑模型：转写、合成、对话都打外部端点，地址由 `.env` 给。
 
 ## 跑起来
 
@@ -20,9 +19,6 @@ docker compose logs -f brains
 node --env-file=.env apps/brains/src/main.ts
 ```
 
-> 本机直接跑时 `WTP_SPLIT_URL` 不能是 `.env.example` 里的 `http://wtpsplit:8000/split`——那是
-> compose 内网的主机名。换成你能访问到的地址，或者干脆走 `docker compose`。
-
 宿主机端口见 `docker-compose.yaml`（现在是 `18781` → 容器 `8787`）。容器名 `might-brains-1`。
 
 启动时把配置**一次断言完**：缺 `STT_API_BASE_URL` / `TTS_API_BASE_URL` / `MIGHT_CHAT_API_KEY` /
@@ -34,13 +30,12 @@ node --env-file=.env apps/brains/src/main.ts
 | --- | --- |
 | `STT_API_BASE_URL` / `STT_API_KEY` / `STT_MODEL` | 转写端点（OpenAI 兼容，baseURL 底下拼 `/audio/transcriptions`）；`STT_MODEL` 不给则用 `qwen-asr` |
 | `TTS_API_BASE_URL` / `TTS_API_KEY` | 合成端点，拼 `/audio/speech/stream`（流式 TTS，见下）；`TTS_MODEL` 不再使用，模型/音色由 daemon 决定 |
-| `TTS_VOICE` | **必填**。默认音色，名字得是 daemon 认的（`default` = 不用参考音色）。填错不会启动失败，但每次合成都是一条 `failed` 帧 |
-| `WTP_SPLIT_URL` | **必填**。分句服务（compose 里的 `wtpsplit`）地址，流式回复硬依赖 |
+| `TTS_VOICE` | **必填**。默认音色，名字得是 daemon 认的（`default` = 不用参考音色）。填错不会启动失败，但每次合成都会 502（日志里有原因） |
 | `MIGHT_CHAT_API_KEY` / `MIGHT_CHAT_API_BASE_URL` | 修订/摘要用的对话端点 |
 | `MIGHT_CHAT_MODEL` | 修订用的模型名 |
 | `MIGHT_BRAINS_TOKEN` | 路由鉴权；空 = 不启用 |
 | `MIGHT_BRAINS_PORT` | 监听端口，默认 8787 |
-| `MIGHT_BRAINS_POLL_TIMEOUT_MS` | 长轮询上限，默认 25000；`/brain-to-human` 只约束等第一帧 |
+| `MIGHT_BRAINS_POLL_TIMEOUT_MS` | 长轮询上限，默认 25000；`/brain-to-human` 只约束等到有内容 |
 
 `.env` 不入库（见 `.gitignore`），也不烘进镜像（见 `.dockerignore`）——里面的端点和密钥是
 本机的事。
@@ -51,7 +46,6 @@ node --env-file=.env apps/brains/src/main.ts
 | --- | --- |
 | [src/http.ts](../apps/brains/src/http.ts) | 路由、鉴权、请求校验、长轮询；`BrainPorts` 契约也在这里 |
 | [src/brain-center.ts](../apps/brains/src/brain-center.ts) | `BrainPorts` 的实现：队列、history、逐块合成、日志 |
-| [src/split.ts](../apps/brains/src/split.ts) | 调 `wtpsplit` 分句，再按权重装箱（首块 32，之后 80） |
 | [src/revise.ts](../apps/brains/src/revise.ts) | 修订：让外部模型检查最近的转录，必要时给 agent 告警；顺带压缩 history |
 | [src/stt-tts.ts](../apps/brains/src/stt-tts.ts) | STT/TTS 的薄封装（模型工厂 + 重试 + Ogg 兜底） |
 | [src/format.ts](../apps/brains/src/format.ts) | 进 prompt 的标签、语音禁用标记 |
@@ -95,11 +89,11 @@ node --env-file=.env apps/brains/src/main.ts
 
 - 音色解析：队列项自带的（入队时快照）→ 否则 `process.env.TTS_VOICE`；两者都没有就**跳过合成并告警**
   （不能“不传”：语音 SDK 会自己塞 `alloy`）。
-- `/brain-to-human` 不排队等整段：`forTts` → `wtpsplit` 分句 → 按权重装箱（首块 32，之后 80；
-  ASCII 记 0.5）→ **逐块调流式 TTS**（`POST /audio/speech/stream`，`[u32 LE][msgpack]` 帧），
-  daemon 每吐出 2 秒音频就转成一帧发给客户端。客户端断开就停手，剩下的文本不合成。
-- 第一帧只有文本 + 句子表（没有音频）；之后每帧是"这一块的文本 + 音频 + 累计消费的句子数"。
-- `skip_before` 不丢消息：那些消息以 `skipped: true` 的文本帧回去，由客户端决定怎么处理。
+- `/brain-to-human` 不排队等整段：`forTts` 过一遍，把整条文本交给流式 TTS
+  （`POST /audio/speech/stream`，`{prompt, voice, seed, audio_format: "opus"}`），把它的
+  `audio/ogg` body 原样转发。不切句、不分块。客户端断开就 abort 那个请求。
+- `skip_before` 不丢消息：那些消息只回文本（flags bit0 = 1），没有音频，由客户端决定怎么处理。
+- 出声之前 TTS 就失败（音色不存在、连不上）→ 502，消息放回队列（最多 3 次）。
 - 合成前先过 `Format.forTts`：`<!-- disable voice -->` 段不念（文本照旧保留）。
 - 请求 `outputFormat: "opus"`；回来的不是 Ogg 才本地转（**镜像里没有 ffmpeg**，理由见
   [Dockerfile.brains](../Dockerfile.brains) —— 实测 TTS 认 `response_format=opus`，正常不会走到那一步）。
@@ -113,8 +107,8 @@ node --env-file=.env apps/brains/src/main.ts
 - `[agent] +1 <brain> <asr|warning> q=a→b "<前 60 字>"` —— 入队；撞上限时同一行带 `DROPPED-OLDEST`。
 - `[agent] -1 <brain> q=a→b "<前 60 字>"` —— 出队；客户端已断开时带 `ABORTED(…这条丢了)`。
 - `[tts] <brain> 客户端 skip_before 跳过 "…"` —— 客户端带了 `skip_before`，这条只发文本不发音频。
-- `[tts] <brain> 整段都被静音了，只发文本 "…"` / `没有音色可用，只发文本 "…"` / `连续 3 次分句失败，丢掉 "…"`。
-- `[stream] 第一帧就失败了` / `流式回复中途失败` —— 分句或 TTS 挂了（已发出的帧照常送达）。
+- `[tts] <brain> 客户端 skip_before 跳过 "…"` / `整段都被静音了，只发文本 "…"` /
+  `没有音色可用，只发文本 "…"` / `连续 3 次失败，丢掉 "…"`。
 - `[brain] <brain> 第一次出现，已创建` / `空闲超过 2 小时，已卸载`。
 
 对账方式：**push 条数 = 出队条数 + 队里剩的条数**，对不上就是撞了上面两条之一。
@@ -155,8 +149,8 @@ curl -sS -X POST localhost:18781/brain-to-human \
   -H 'content-type: application/msgpack' --data-binary @request.msgpack -o frames.bin
 ```
 
-响应是**帧流**（`[u32 长度][msgpack]` 重复），不能当单个对象解；要验就用 `http.test.ts` 里
-`readFrames` 那套逻辑，或者直接看日志。
+响应是「前导 + Ogg 流」：前 4 字节是文本长度（大端），接着是 UTF-8 文本、1 字节 flags，
+然后是音频。不能当单个 msgpack 对象解；要验就看 `http.test.ts` 里的 `readSpeech`，或者直接听。
 
 `curl -d` / `-F` 产不出 msgpack —— 用任意 msgpack 编码器把 `{"brain_id":"<brain>"}` 写成文件再
 `--data-binary`。

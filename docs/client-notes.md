@@ -8,14 +8,14 @@
 ```
                  ┌───────────────────────────┐
   开始对话 ──────▶│ 轮询 /brain-to-human      │
-                 │ (读到帧就播，empty 就再来) │
+                 │ (没内容就再来一次)         │
                  └──────────┬────────────────┘
-                            │ 每一帧
+                            │ 前导 + Ogg 流
                             ▼
                  ┌───────────────────────────┐
                  │ 解码 Ogg → PCM16 → 播放    │◀──┐
                  └──────────┬────────────────┘   │
-                            │ 本帧播完            │
+                            │ 边到边播            │
                             └────────────────────┘
 
    同时，另一条路：
@@ -28,40 +28,21 @@
 `x-brain-voice` 头（旧名 `x-might-voice` 也认）。两个提交端点都能带，但只有 `/agent-to-brain`
 上的会影响合成：一条消息一个音色，不带就用部署方配的默认音色（规格 §3.3）。
 
-## brain-to-human：分帧流
+## brain-to-human：前导 + Ogg 流
 
-`/brain-to-human` 的响应**永远**是一串帧（没有"单个 MessagePack"那种形态了）：
+响应永远是 `application/octet-stream`，body 是：
 
 ```
-while (true) {
-  read 4 bytes -> length (big-endian u32)
-  read length bytes -> MessagePack -> { kind, text, audio }
-  if (kind == "empty") break        // 超时，没有内容，重发
-  enqueue(audio)                     // 每帧是独立的 Ogg 文件
-}
-// body 正常结束 = 这一条说完了
+[u32 大端 文本长度][UTF-8 文本][1 字节 flags][Ogg Opus 流…]
 ```
 
-- **第一帧没有音频**：`{ text, sentences, skipped }`。`text` 是整条原始回复（`<!-- disable voice -->`
-  段也在里面），`sentences` 是服务器切好的句子表——文字可以立刻上屏。
-- **之后每帧** `{ text, audio, consumed_sentences }`：`text` 是这一块念的内容，`consumed_sentences`
-  是累计句数。被打断时用"总句数 − consumed_sentences"算还剩几句没听到，比按毫秒估准。粒度是"一块"
-  （一块可能拆成多帧），所以这个值可能**少报**，最多差一块。
-- **每帧的 `audio` 自己解码**，把 PCM 追加到播放队列；不要把一个帧的字节拼到另一个后面当
-  一个 Ogg 用。
-- 首帧通常会在一两秒内到（服务端把回复切成 ~32 权重的小块先合成），之后按 80 权重一块接一块；
-  所以不需要等整条回复合成完就开始播。
-- 中途断了（读不到完整一帧）就当这条丢了：重新发请求，服务端不会重投。
-- **跳过积压**：下一个请求带 `skip_before: Date.now()`（UTC 毫秒，就用手机自己的钟）——比这个
-  时刻早入队的消息不会合成，但会以 `skipped: true` 的文本帧回给你；你决定是显示、忽略、还是记进
-  下一次的 `unheard_text`。
-- **一条响应里最多一条 skipped 帧**，发完就结束 body。收到就重发，直到拿到真正的回复——所以
-  "第一条帧就是这条回复的首帧"这个假设仍然成立。
-- **`{ kind: "failed", consumed_sentences }`** 表示合成挂了：用首帧的 `sentences.length` 减它
-  就知道差多少句。正常说完没有这一帧。不想处理这一帧的话，用
-  `consumed_sentences < sentences.length` 判断也行，两者一致。
-- `failed` 也可能出现在**第一块**（`consumed_sentences: 0`）：文本帧之后一个音频帧都没有。
-  和"整条被静音"的区别是后者 `sentences` 是空数组、且不会有 `failed`。
+- `文本长度 = 0` → 这一轮没内容，立刻重发。
+- `flags` 的 bit0 = 1 → 这条是被 `skip_before` 跳过的旧消息，后面没有音频。
+- 文本一次到齐，可以直接上屏；之后全是连续的 Ogg，喂给解码器就行，不用按块拼。
+- **没有结束标记**：body 结束就是说完。TTS 中途挂掉也是 body 结束——想区分只能靠 Ogg EOS。
+- 跳过积压：请求带 `skip_before: Date.now()`（UTC 毫秒，手机的钟）。一条响应最多一条消息，
+  收到 flags=1 就重发，直到拿到真要说的那条。
+- 出声之前失败是 `502`（消息放回队列，下次轮询还能拿到），不是空 body。
 
 ## 打断语义
 

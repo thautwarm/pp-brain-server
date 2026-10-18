@@ -44,8 +44,6 @@ required("MIGHT_CHAT_API_BASE_URL");
 // 默认音色。必填是有原因的：@ai-sdk/openai 的 speech 在 voice 为 undefined 时会自己塞
 // "alloy"，而自建的 TTS 未必认这个名字 —— 宁可启动时就报出来。
 required("TTS_VOICE");
-// 流式 /brain-to-human 靠它切句（硬依赖，不做本地兜底）。
-required("WTP_SPLIT_URL");
 
 // 没有 brain 清单：`brain_id` 由客户端随便给，第一次出现时现建（空闲 2 小时自动卸载，见
 // brain-center）。所以启动时没什么可读的配置文件。

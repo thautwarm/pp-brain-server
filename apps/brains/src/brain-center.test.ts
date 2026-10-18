@@ -10,12 +10,7 @@ import { Brains, evictIdleBrains } from "./brain-center.ts";
  * "包含"而不是全等。
  */
 async function touch(brainId: string): Promise<void> {
-  for await (const _chunk of Brains.brainToHuman(
-    { brain_id: brainId },
-    { signal: AbortSignal.timeout(50), waitMs: 50 },
-  )) {
-    // 刚建的 brain 不可能有内容，循环体走不到。
-  }
+  await Brains.brainToHuman({ brain_id: brainId }, { signal: AbortSignal.timeout(50), waitMs: 50 });
 }
 
 test("brain_id 没有白名单：第一次出现就现建（等不到内容也不报错）", async () => {
