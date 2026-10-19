@@ -36,6 +36,7 @@ node --env-file=.env apps/brains/src/main.ts
 | `MIGHT_BRAINS_TOKEN` | 路由鉴权；空 = 不启用 |
 | `MIGHT_BRAINS_PORT` | 监听端口，默认 8787 |
 | `MIGHT_BRAINS_POLL_TIMEOUT_MS` | 长轮询上限，默认 25000；`/brain-to-human` 只约束等到有内容 |
+| `MIGHT_LOG_LLM` | 设成 `1` 就把发往 chat 模型的请求/响应原样打进日志（单条最多 8000 字）。**含完整对话内容**，只在排查时开 |
 
 `.env` 不入库（见 `.gitignore`），也不烘进镜像（见 `.dockerignore`）——里面的端点和密钥是
 本机的事。
@@ -107,8 +108,12 @@ node --env-file=.env apps/brains/src/main.ts
 - `[agent] +1 <brain> <asr|warning> q=a→b "<前 60 字>"` —— 入队；撞上限时同一行带 `DROPPED-OLDEST`。
 - `[agent] -1 <brain> q=a→b "<前 60 字>"` —— 出队；客户端已断开时带 `ABORTED(…这条丢了)`。
 - `[tts] <brain> 客户端 skip_before 跳过 "…"` —— 客户端带了 `skip_before`，这条只发文本不发音频。
-- `[tts] <brain> 客户端 skip_before 跳过 "…"` / `整段都被静音了，只发文本 "…"` /
-  `没有音色可用，只发文本 "…"` / `连续 3 次失败，丢掉 "…"`。
+- `[in] <brain> agent voice=… "…"` —— agent 推文本进来（含这次用的音色）。
+- `[tts] <brain> voice=… "…"` —— 实际交给 TTS 的音色和文本；失败/跳过/丢消息也在这一族。
+- `[b2h] <brain> empty` / `speech N 字 M B T ms` / `客户端断开 M B` / `中断 M B` —— 每次
+  `/brain-to-human` 的结局和实际发出的字节数。
+- `[llm] >>> POST <url> <请求体>` / `[llm] <<< <状态码> <耗时> <响应体>` —— 只有
+  `MIGHT_LOG_LLM=1` 时才打。
 - `[brain] <brain> 第一次出现，已创建` / `空闲超过 2 小时，已卸载`。
 
 对账方式：**push 条数 = 出队条数 + 队里剩的条数**，对不上就是撞了上面两条之一。

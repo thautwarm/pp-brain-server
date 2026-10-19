@@ -13,6 +13,7 @@ import { serve } from "@hono/node-server";
 
 import { Brains, startBackgroundTask } from "./brain-center.ts";
 import { createBrainRouter } from "./http.ts";
+import { installLlmLogger } from "./llm-log.ts";
 
 /** 配置不对就别起服务：半启动的 server 比压根不启动难查得多。 */
 function die(message: string): never {
@@ -50,6 +51,9 @@ required("TTS_VOICE");
 
 const token = process.env.MIGHT_BRAINS_TOKEN ?? ""; // 空 = 不启用鉴权（规格 §0.2）
 const port = envInt("MIGHT_BRAINS_PORT", 8787);
+
+// 排查用：MIGHT_LOG_LLM=1 时把发往 chat 模型的请求/响应原样打到日志里（默认关）。
+installLlmLogger();
 
 const app = createBrainRouter({
   ports: Brains,
