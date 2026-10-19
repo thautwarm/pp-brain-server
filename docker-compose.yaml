@@ -12,4 +12,7 @@ services:
       - .env
     ports:
       - "18781:8787"
+    volumes:
+      # MIGHT_LOG_LLM=1 时把 LLM 请求/响应写到 ./logs（容器里是 /app/logs）。
+      - ./logs:/app/logs
     restart: unless-stopped

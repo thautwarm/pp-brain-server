@@ -15,3 +15,6 @@ tmp/
 .DS_Store
 
 # 没有 dist/ —— 这个仓库不产出任何 JS 文件
+
+# LLM 请求/响应落盘（MIGHT_LOG_LLM=1）
+logs/
