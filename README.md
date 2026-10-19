@@ -4,6 +4,11 @@ Self-hosted Brain API server for [PP Friend](https://github.com/thautwarm/pp-fri
 
 English | [中文](README.zh.md)
 
+> **Reference implementation.** This server targets personal and home-assistant setups.
+> All state lives in memory, with no persistence, horizontal scaling, or multi-tenant
+> isolation, and it is not hardened for public exposure — run it on a trusted LAN or
+> behind a VPN.
+
 ## Quick start
 
 **Prerequisites**
